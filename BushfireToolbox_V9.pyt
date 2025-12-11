@@ -5,6 +5,7 @@ from datetime import datetime
 
 FEATURE_SERVICE_URL = r"https://services-ap1.arcgis.com/1awYJ9qmpKeoPyqc/arcgis/rest/services/Project_Study_Area/FeatureServer/0"
 SVTM_URL = r"https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/VIS/SVTM_NSW_Extant_PCT/MapServer/3"
+BFPL_URL = r"https://mapprod3.environment.nsw.gov.au/arcgis/rest/services/Fire/BFPL/MapServer/0"
 TARGET_EPSG = 8058
 FD_NAME = "BufferLayers"
 FD_ALT_NAME = "BufferLayers_EPSG8058"
@@ -47,31 +48,88 @@ def _ensure_fds(workspace):
     return fds_alt, sr_target
 
 def _delete_name_globally(gdb_workspace, name):
+    """
+    Attempt to delete any object named `name` anywhere in the file geodatabase `gdb_workspace`.
+    This function is defensive: it checks the root, each feature dataset and tries both
+    listing and explicit path deletes to handle cases where name collisions are reported by ArcGIS.
+    """
     _msg(f"Scouring geodatabase {gdb_workspace} for anything named '{name}' (like a cartographic inquisition)...")
     prev = arcpy.env.workspace
-    arcpy.env.workspace = gdb_workspace
+    try:
+        arcpy.env.workspace = gdb_workspace
 
-    for fc in arcpy.ListFeatureClasses(name):
-        _msg(f"  • Executing feature class {fc}. It's a fair cop.")
-        arcpy.management.Delete(fc)
-    for ras in arcpy.ListRasters(name):
-        _msg(f"  • Banishing raster {ras} to the abyss.")
-        arcpy.management.Delete(ras)
+        # Explicitly check the root path (sometimes ListFeatureClasses may miss it)
+        root_candidate = os.path.join(gdb_workspace, name)
+        try:
+            if arcpy.Exists(root_candidate):
+                _msg(f"  • Deleting root feature class {root_candidate}.")
+                arcpy.management.Delete(root_candidate)
+        except Exception as ex_root:
+            _warn(f"  • Could not delete root candidate {root_candidate}: {ex_root}")
 
-    for ds in arcpy.ListDatasets(feature_type='feature'):
-        ds_path = os.path.join(gdb_workspace, ds)
-        arcpy.env.workspace = ds_path
-        for fc in arcpy.ListFeatureClasses(name):
-            _msg(f"  • Executing feature class {fc} inside {ds}.")
-            arcpy.management.Delete(fc)
-        for ras in arcpy.ListRasters(name):
-            _msg(f"  • Banishing raster {ras} from {ds}.")
-            arcpy.management.Delete(ras)
+        # Use listing in the root workspace
+        try:
+            for fc in arcpy.ListFeatureClasses(name):
+                _msg(f"  • Executing feature class {fc} in root. It's a fair cop.")
+                try:
+                    arcpy.management.Delete(fc)
+                except Exception as ex_fc:
+                    _warn(f"    • Could not delete {fc} from root: {ex_fc}")
+        except Exception as ex_list_root:
+            _warn(f"  • ListFeatureClasses failed in root: {ex_list_root}")
 
-    arcpy.env.workspace = prev
+        try:
+            for ras in arcpy.ListRasters(name):
+                _msg(f"  • Banishing raster {ras} to the abyss.")
+                try:
+                    arcpy.management.Delete(ras)
+                except Exception as ex_r:
+                    _warn(f"    • Could not delete raster {ras}: {ex_r}")
+        except Exception as ex_list_rast:
+            _warn(f"  • ListRasters failed in root: {ex_list_rast}")
+
+        # Iterate feature datasets and look for named items inside them
+        try:
+            for ds in arcpy.ListDatasets(feature_type='feature') or []:
+                ds_path = os.path.join(gdb_workspace, ds)
+                # Explicit path candidate inside dataset
+                candidate_in_ds = os.path.join(ds_path, name)
+                try:
+                    if arcpy.Exists(candidate_in_ds):
+                        _msg(f"  • Deleting feature class {candidate_in_ds} inside dataset {ds}.")
+                        arcpy.management.Delete(candidate_in_ds)
+                except Exception as ex_cds:
+                    _warn(f"    • Could not delete {candidate_in_ds}: {ex_cds}")
+
+                # Also set workspace to ds_path and list (defensive)
+                try:
+                    arcpy.env.workspace = ds_path
+                    for fc in arcpy.ListFeatureClasses(name):
+                        _msg(f"  • Executing feature class {fc} inside {ds}.")
+                        try:
+                            arcpy.management.Delete(fc)
+                        except Exception as ex_fc_ds:
+                            _warn(f"    • Could not delete {fc} from {ds}: {ex_fc_ds}")
+                    for ras in arcpy.ListRasters(name):
+                        _msg(f"  • Banishing raster {ras} from {ds}.")
+                        try:
+                            arcpy.management.Delete(ras)
+                        except Exception as ex_rds:
+                            _warn(f"    • Could not delete raster {ras} from {ds}: {ex_rds}")
+                except Exception as ex_inner_ds:
+                    _warn(f"  • Could not enumerate inside dataset {ds}: {ex_inner_ds}")
+        except Exception as ex_ds_list:
+            _warn(f"  • Could not list datasets: {ex_ds_list}")
+
+    finally:
+        arcpy.env.workspace = prev
     _msg("Global purge complete. Bring out the next dataset!")
 
 def _unique_rename(path, data_type="FeatureClass"):
+    """
+    If `path` exists, rename it by appending a date (and a counter if necessary).
+    Return the new path (not the original). This is important so callers get the actual new name.
+    """
     if not arcpy.Exists(path):
         return path
     stamp = datetime.now().strftime("%Y%m%d")
@@ -86,13 +144,15 @@ def _unique_rename(path, data_type="FeatureClass"):
         i += 1
     _msg(f"Object '{base}' already exists; renaming it to '{candidate}' (and pretending this was the plan all along).")
     arcpy.management.Rename(path, candidate, data_type)
-    return path
+    # Return the actual new path so callers reference the renamed object
+    return candidate_path
 
 def _prepare_output(path, overwrite, data_type="FeatureClass", gdb_workspace=None):
     name = os.path.basename(path)
     if overwrite:
         _msg(f"Overwrite is enabled. Silencing previous '{name}' with extreme prejudice...")
         if gdb_workspace:
+            # Ensure any object named `name` anywhere in the geodatabase is removed before creating
             _delete_name_globally(gdb_workspace, name)
         elif arcpy.Exists(path):
             arcpy.management.Delete(path)
@@ -280,15 +340,17 @@ class SiteBufferToolV9(object):
 
         # Site buffer
         _msg("Applying site buffer. Stand well back; it may go off.")
-        buffer_name = f"Site_Buffer_{int(buffer_distance)}"
+        # Use project-specific name to avoid collisions and for consistency (all outputs prefixed with AEP{project})
+        buffer_name = f"AEP{project_number}_Site_Buffer_{int(buffer_distance)}"
         buffer_path = os.path.join(fds_path, buffer_name)
+        # let _prepare_output perform the global deletion when overwrite=True (pass the gdb workspace)
         buffer_path = _prepare_output(buffer_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(subject_layer, buffer_path, f"{buffer_distance} Meters", dissolve_option="ALL")
         _msg(f"Site buffer created at {buffer_path}.")
 
         # Contours clip
         _msg("Clipping contours to the site buffer. No contour shall pass (the boundary).")
-        clipped_name = f"AEP{project_number}2m_Contours"
+        clipped_name = f"AEP{project_number}_2m_Contours"
         clipped_path = os.path.join(fds_path, clipped_name)
         clipped_path = _prepare_output(clipped_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(contours_fc, buffer_path, clipped_path)
@@ -303,6 +365,18 @@ class SiteBufferToolV9(object):
         arcpy.management.MakeFeatureLayer(SVTM_URL, "svtm_layer")
         arcpy.analysis.Clip("svtm_layer", buffer_path, svtm_path)
         _msg(f"SVTM clipped to {svtm_path}.")
+
+        # New: BFPL (Bushfire Prone Vegetation) clip to site buffer and save in feature dataset
+        try:
+            bfpl_name = f"AEP{project_number}_BFPL_{svtm_date}"
+            bfpl_path = os.path.join(fds_path, bfpl_name)
+            bfpl_path = _prepare_output(bfpl_path, overwrite_outputs, "FeatureClass", workspace)
+            _msg("Summoning BFPL layer and clipping to site buffer...")
+            arcpy.management.MakeFeatureLayer(BFPL_URL, "bfpl_layer")
+            arcpy.analysis.Clip("bfpl_layer", buffer_path, bfpl_path)
+            _msg(f"BFPL clipped to {bfpl_path}.")
+        except Exception as ex_bfpl:
+            _warn(f"Could not clip BFPL layer: {ex_bfpl}")
 
         # TIN from clipped contours
         tin_name = f"AEP{project_number}_TIN"
@@ -322,7 +396,7 @@ class SiteBufferToolV9(object):
 
         # Building buffer
         _msg("Buffering building outline. Because one must respect personal space.")
-        bbuf_name = f"ARP{project_number}_Building_Buffer_{int(building_buffer_distance)}M"
+        bbuf_name = f"AEP{project_number}_Building_Buffer_{int(building_buffer_distance)}M"
         bbuf_path = os.path.join(fds_path, bbuf_name)
         bbuf_path = _prepare_output(bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(building_fc, bbuf_path, f"{building_buffer_distance} Meters", dissolve_option="ALL")
@@ -426,6 +500,88 @@ class SiteBufferToolV9(object):
         else:
             _warn("No Above or Below polygons to merge. Possibly flat as a pancake.")
 
+        # NEW: Overlay Above/Below onto SVTM layers using Identity (overwrite originals)
+        identity_outputs = []
+        try:
+            _msg("Attempting to transfer Above/Below 'Relation' attribute onto SVTM layers via Identity overlay (overwriting originals)...")
+            svtm_variants = [
+                ("Site SVTM", svtm_path),
+                ("SVTM Building Buffer", svtm_bbuf_path),
+                ("SVTM Building Buffer No Building", svtm_bbuf_erase_path)
+            ]
+            for label, svtm_fc in svtm_variants:
+                if not svtm_fc or not arcpy.Exists(svtm_fc):
+                    _msg(f"Skipping {label}: source {svtm_fc} does not exist.")
+                    continue
+                if not arcpy.Exists(final_path):
+                    _warn(f"No Above/Below polygon layer to identify from; skipping overlay for {label}.")
+                    continue
+
+                _msg(f"Preparing temporary copy of {svtm_fc} for safe identity processing...")
+                temp_svtm = os.path.join("in_memory", f"svtm_temp_{datetime.now().strftime('%H%M%S')}")
+                arcpy.management.CopyFeatures(svtm_fc, temp_svtm)
+
+                # If the temp copy has a Relation field, remove it to avoid collisions
+                existing_fields = [f.name for f in arcpy.ListFields(temp_svtm)]
+                if "Relation" in existing_fields:
+                    _msg(f"Removing existing 'Relation' field from temporary SVTM copy to avoid collisions.")
+                    try:
+                        arcpy.management.DeleteField(temp_svtm, "Relation")
+                    except Exception as del_ex:
+                        _warn(f"Could not delete existing Relation field: {del_ex}. Continuing anyway.")
+
+                ident_tmp = os.path.join("in_memory", f"svtm_ident_{datetime.now().strftime('%H%M%S')}")
+                _msg(f"Running Identity: {temp_svtm} identity {final_path} -> in-memory")
+                arcpy.analysis.Identity(temp_svtm, final_path, ident_tmp)
+                _msg("Identity completed in memory.")
+
+                # Overwrite the original SVTM feature class with the identity result
+                try:
+                    if arcpy.Exists(svtm_fc):
+                        _msg(f"Deleting original SVTM at {svtm_fc} to allow overwrite.")
+                        arcpy.management.Delete(svtm_fc)
+                    _msg(f"Copying identity result back to original path: {svtm_fc}")
+                    arcpy.management.CopyFeatures(ident_tmp, svtm_fc)
+                    _msg(f"Original SVTM {svtm_fc} overwritten with Above/Below attribute.")
+                    # Update attributes: rename Relation -> Slope_Type with mapping
+                    try:
+                        fields_after = [f.name for f in arcpy.ListFields(svtm_fc)]
+                        if "Relation" in fields_after:
+                            if "Slope_Type" not in fields_after:
+                                _msg(f"Adding 'Slope_Type' field to {svtm_fc}.")
+                                arcpy.AddField_management(svtm_fc, "Slope_Type", "TEXT", field_length=30)
+                            _msg(f"Populating 'Slope_Type' from 'Relation' in {svtm_fc}. Mapping values...")
+                            with arcpy.da.UpdateCursor(svtm_fc, ["Relation", "Slope_Type"]) as ucur:
+                                for urow in ucur:
+                                    rel = urow[0]
+                                    if rel is None:
+                                        mapped = None
+                                    else:
+                                        rel_str = str(rel).strip()
+                                        if rel_str == "LessEqual":
+                                            mapped = "Down Slope"
+                                        elif rel_str == "Greater":
+                                            mapped = "Up Slope"
+                                        else:
+                                            mapped = rel_str
+                                    urow[1] = mapped
+                                    ucur.updateRow(urow)
+                            # Try to remove original Relation field
+                            try:
+                                _msg(f"Deleting original 'Relation' field from {svtm_fc}.")
+                                arcpy.management.DeleteField(svtm_fc, "Relation")
+                            except Exception as del_rel_ex:
+                                _warn(f"Could not delete 'Relation' field from {svtm_fc}: {del_rel_ex}")
+                        else:
+                            _msg(f"No 'Relation' field present in {svtm_fc} after identity; skipping attribute mapping.")
+                    except Exception as attr_ex:
+                        _warn(f"Failed to update attributes on {svtm_fc}: {attr_ex}")
+                    identity_outputs.append(svtm_fc)
+                except Exception as ex_copy:
+                    _warn(f"Could not overwrite original SVTM {svtm_fc} with identity result: {ex_copy}")
+        except Exception as ex_ident:
+            _warn(f"Failed while overlaying Above/Below onto SVTM: {ex_ident}")
+
         # Reset env, cleanup
         arcpy.env.cellSize = old_cell
         arcpy.env.mask = None
@@ -436,11 +592,19 @@ class SiteBufferToolV9(object):
         # Add outputs to map
         if add_to_map:
             _msg("Adding key outputs to the current map. Cue triumphant fanfare.")
-            self._add_outputs_to_map([
+            outputs_to_add = [
                 buffer_path, clipped_path, svtm_path, tin_path,
                 bbuf_path, svtm_bbuf_path, svtm_bbuf_erase_path,
                 dsm_path, dsm_poly_path, final_path
-            ])
+            ]
+            # include BFPL clipped layer if it was created
+            try:
+                if 'bfpl_path' in locals() and bfpl_path and arcpy.Exists(bfpl_path):
+                    outputs_to_add.append(bfpl_path)
+            except Exception:
+                pass
+            outputs_to_add.extend(identity_outputs)
+            self._add_outputs_to_map(outputs_to_add)
         else:
             _msg("Not adding outputs to the map by request. They are lurking in the geodatabase, sniggering quietly.")
 
