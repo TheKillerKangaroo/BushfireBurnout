@@ -92,7 +92,6 @@ def _delete_name_globally(gdb_workspace, name):
         try:
             for ds in arcpy.ListDatasets(feature_type='feature') or []:
                 ds_path = os.path.join(gdb_workspace, ds)
-                # Explicit path candidate inside dataset
                 candidate_in_ds = os.path.join(ds_path, name)
                 try:
                     if arcpy.Exists(candidate_in_ds):
@@ -101,7 +100,6 @@ def _delete_name_globally(gdb_workspace, name):
                 except Exception as ex_cds:
                     _warn(f"    • Could not delete {candidate_in_ds}: {ex_cds}")
 
-                # Also set workspace to ds_path and list (defensive)
                 try:
                     arcpy.env.workspace = ds_path
                     for fc in arcpy.ListFeatureClasses(name):
@@ -159,6 +157,17 @@ def _prepare_output(path, overwrite, data_type="FeatureClass", gdb_workspace=Non
         _msg(f"Overwrite is disabled. We shall delicately sidestep name clashes for '{name}'.")
         return _unique_rename(path, data_type)
 
+def _tin_output_path(workspace, tin_name):
+    if workspace.lower().endswith(".gdb"):
+        base_folder = os.path.dirname(workspace)
+        tin_folder = os.path.join(base_folder, "TINs")
+    else:
+        tin_folder = os.path.join(workspace, "TINs")
+    if not os.path.exists(tin_folder):
+        _msg(f"Constructing TIN lair at '{tin_folder}'. Mind the gap.")
+        os.makedirs(tin_folder, exist_ok=True)
+    return os.path.join(tin_folder, tin_name)
+
 class Toolbox(object):
     def __init__(self):
         self.label = "Buffer Toolbox V9"
@@ -171,7 +180,7 @@ class SiteBufferToolV9(object):
         self.description = (
             "Buffers the project, clips contours and SVTM, buffers the building, "
             "erases the building, and clips BFPL to site buffer. "
-            "Now tidied to only produce the layers you asked for."
+            "Now tidied to only produce the layers you asked for, plus TIN."
         )
         self.canRunInBackground = True
 
@@ -267,7 +276,7 @@ class SiteBufferToolV9(object):
         return
 
     def execute(self, parameters, messages):
-        _msg("Welcome to the Bushfire Preliminary Assessment. Streamlined outputs engaged.")
+        _msg("Welcome to the Bushfire Preliminary Assessment. Streamlined outputs + TIN engaged.")
 
         workspace = parameters[0].valueAsText
         project_number = parameters[1].valueAsText
@@ -375,7 +384,23 @@ class SiteBufferToolV9(object):
         arcpy.analysis.Erase(svtm_bbuf_path, building_fc, svtm_bbuf_erase_path)
         _msg(f"Building erased from SVTM buffer; results at {svtm_bbuf_erase_path}.")
 
-        # Cleanup of any in_memory workspace just in case
+        # TIN from clipped contours (KEEP and add to map)
+        tin_name = f"AEP{project_number}_TIN"
+        tin_path = _tin_output_path(workspace, tin_name)
+        if arcpy.Exists(tin_path):
+            _msg(f"A previous TIN was found at {tin_path}; it has been sacked.")
+            arcpy.management.Delete(tin_path)
+
+        z_field = self._infer_z_field(clipped_path)
+        _msg(f"Using elevation field '{z_field}' for TIN creation. It's only a model.")
+        in_feats = [[clipped_path, z_field, "hardline"]]
+        _msg(f"TIN inputs: {in_feats}")
+        _msg(f"Creating TIN at {tin_path}...")
+        arcpy.ddd.CreateTin(out_tin=tin_path, spatial_reference=sr,
+                            in_features=in_feats, constrained_delaunay="DELAUNAY")
+        _msg("TIN successfully created.")
+
+        # Cleanup in_memory
         try:
             arcpy.management.Delete("in_memory")
         except Exception:
@@ -385,21 +410,36 @@ class SiteBufferToolV9(object):
         if add_to_map:
             _msg("Adding requested outputs to the current map.")
             outputs_to_add = [
-                svtm_bbuf_erase_path,  # svtm_bld_buffer_nobld...
-                svtm_path,             # svtm...
-                bbuf_path,             # building buffer...
-                buffer_path,           # site_buffer...
-                clipped_path           # 2m_contours
+                svtm_bbuf_erase_path,
+                svtm_path,
+                bbuf_path,
+                buffer_path,
+                clipped_path,
+                tin_path
             ]
-            # include BFPL clipped layer if it was created
             if bfpl_path and arcpy.Exists(bfpl_path):
-                outputs_to_add.append(bfpl_path)  # bfpl...
+                outputs_to_add.append(bfpl_path)
             self._add_outputs_to_map(outputs_to_add)
         else:
             _msg("Not adding outputs to the map by request.")
 
-        _msg("Bushfire Preliminary Assessment completed (tidy edition).")
+        _msg("Bushfire Preliminary Assessment completed (tidy + TIN edition).")
         return
+
+    def _infer_z_field(self, fc):
+        _msg(f"Attempting to divine the elevation field in {fc}...")
+        fields = [f for f in arcpy.ListFields(fc)
+                  if f.type in ("Integer", "SmallInteger", "Double", "Single")]
+        candidates = ("ELEVATION", "ELEV", "Z", "CONTOUR", "VALUE")
+        for cand in candidates:
+            for f in fields:
+                if f.name.upper() == cand:
+                    _msg(f"Found promising elevation field '{f.name}'. That'll do nicely.")
+                    return f.name
+        if fields:
+            _warn(f"No standard elevation field found; defaulting to first numeric field '{fields[0].name}'.")
+            return fields[0].name
+        raise arcpy.ExecuteError("No numeric elevation field found for contours. This DEM is deceased.")
 
     def _add_outputs_to_map(self, paths):
         try:
