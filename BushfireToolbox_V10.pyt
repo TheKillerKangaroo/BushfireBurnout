@@ -299,7 +299,6 @@ class BushfireToolboxV10(object):
         _msg(f"Overwrite: {overwrite_outputs}")
         _msg(f"Add to map: {add_to_map}")
 
-        # Validate building geometry
         try:
             bdesc = arcpy.Describe(building_fc)
             if getattr(bdesc, "shapeType", "").lower() != "polygon":
@@ -309,7 +308,6 @@ class BushfireToolboxV10(object):
 
         fds_path, sr = _ensure_fds(workspace)
 
-        # Subject site selection
         safe_project = project_number.replace("'", "''")
         where = f"project_number = '{safe_project}'"
         subject_layer = "subject_site_layer"
@@ -318,21 +316,18 @@ class BushfireToolboxV10(object):
         if int(arcpy.management.GetCount(subject_layer).getOutput(0)) == 0:
             raise arcpy.ExecuteError(f"No features found for project_number {project_number}.")
 
-        # Site buffer
         buffer_name = f"AEP{project_number}_Site_Buffer_{int(buffer_distance)}"
         buffer_path = os.path.join(fds_path, buffer_name)
         buffer_path = _prepare_output(buffer_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(subject_layer, buffer_path, f"{buffer_distance} Meters", dissolve_option="ALL")
         _msg(f"Site buffer: {buffer_path}")
 
-        # Contours clip
         clipped_name = f"AEP{project_number}_2m_Contours"
         clipped_path = os.path.join(fds_path, clipped_name)
         clipped_path = _prepare_output(clipped_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(contours_fc, buffer_path, clipped_path)
         _msg(f"Contours clipped: {clipped_path}")
 
-        # SVTM clip to site buffer
         svtm_date = datetime.now().strftime("%Y%m%d")
         svtm_name = f"AEP{project_number}_SVTM_{svtm_date}"
         svtm_path = os.path.join(fds_path, svtm_name)
@@ -341,7 +336,6 @@ class BushfireToolboxV10(object):
         arcpy.analysis.Clip("svtm_layer", buffer_path, svtm_path)
         _msg(f"SVTM clipped: {svtm_path}")
 
-        # BFPL clip to site buffer
         bfpl_path = None
         try:
             bfpl_name = f"AEP{project_number}_BFPL_{svtm_date}"
@@ -353,28 +347,24 @@ class BushfireToolboxV10(object):
         except Exception as ex_bfpl:
             _warn(f"Could not clip BFPL: {ex_bfpl}")
 
-        # Building buffer
         bbuf_name = f"AEP{project_number}_Building_Buffer_{int(building_buffer_distance)}M"
         bbuf_path = os.path.join(fds_path, bbuf_name)
         bbuf_path = _prepare_output(bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(building_fc, bbuf_path, f"{building_buffer_distance} Meters", dissolve_option="ALL")
         _msg(f"Building buffer: {bbuf_path}")
 
-        # SVTM clip to building buffer
         svtm_bbuf_name = f"AEP{project_number}_SVTM_Bld_Buffer_{svtm_date}"
         svtm_bbuf_path = os.path.join(fds_path, svtm_bbuf_name)
         svtm_bbuf_path = _prepare_output(svtm_bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(svtm_path, bbuf_path, svtm_bbuf_path)
         _msg(f"SVTM within building buffer: {svtm_bbuf_path}")
 
-        # Erase buildings from SVTM building buffer
         svtm_bbuf_erase_name = f"AEP{project_number}_SVTM_Bld_Buffer_NoBld_{svtm_date}"
         svtm_bbuf_erase_path = os.path.join(fds_path, svtm_bbuf_erase_name)
         svtm_bbuf_erase_path = _prepare_output(svtm_bbuf_erase_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Erase(svtm_bbuf_path, building_fc, svtm_bbuf_erase_path)
         _msg(f"SVTM bld buffer no-buildings: {svtm_bbuf_erase_path}")
 
-        # TIN from clipped contours
         tin_name = f"AEP{project_number}_TIN"
         tin_path = _tin_output_path(workspace, tin_name)
         if arcpy.Exists(tin_path):
@@ -387,7 +377,6 @@ class BushfireToolboxV10(object):
         arcpy.ddd.CreateTin(out_tin=tin_path, spatial_reference=sr, in_features=in_feats, constrained_delaunay="DELAUNAY")
         _msg("TIN created.")
 
-        # DSM from TIN, Above/Below splitting with threshold
         _msg("Creating DSM (1 m) from TIN and performing Above/Below splitting...")
         old_cell = arcpy.env.cellSize
         arcpy.env.mask = buffer_path
@@ -456,74 +445,85 @@ class BushfireToolboxV10(object):
         else:
             _warn("No Above/Below polygons to merge.")
 
-        # Overlay Above/Below onto SVTM layers via Identity, add Slope_Type mapping
+        overlay_ok = True
         try:
-            svtm_variants = [
-                ("SVTM (site)", svtm_path),
-                ("SVTM Building Buffer No Building", svtm_bbuf_erase_path)
-            ]
-            for label, svtm_fc in svtm_variants:
-                if not svtm_fc or not arcpy.Exists(svtm_fc):
-                    _msg(f"Skipping {label}: source {svtm_fc} missing.")
-                    continue
-                if not final_path or not arcpy.Exists(final_path):
-                    _warn(f"No Above/Below polygon layer found; skipping identity for {label}.")
-                    continue
-                _msg(f"Identity overlay for {label}...")
-                temp_svtm = os.path.join("in_memory", f"svtm_temp_{datetime.now().strftime('%H%M%S')}")
-                arcpy.management.CopyFeatures(svtm_fc, temp_svtm)
-                existing_fields = [f.name for f in arcpy.ListFields(temp_svtm)]
-                if "Relation" in existing_fields:
-                    try:
-                        arcpy.management.DeleteField(temp_svtm, "Relation")
-                    except Exception:
-                        pass
-                ident_tmp = os.path.join("in_memory", f"svtm_ident_{datetime.now().strftime('%H%M%S')}")
-                arcpy.analysis.Identity(temp_svtm, final_path, ident_tmp)
-                try:
-                    if arcpy.Exists(svtm_fc):
-                        arcpy.management.Delete(svtm_fc)
-                    arcpy.management.CopyFeatures(ident_tmp, svtm_fc)
-                    fields_after = [f.name for f in arcpy.ListFields(svtm_fc)]
-                    if "Relation" in fields_after:
-                        if "Slope_Type" not in fields_after:
-                            arcpy.AddField_management(svtm_fc, "Slope_Type", "TEXT", field_length=30)
-                        with arcpy.da.UpdateCursor(svtm_fc, ["Relation", "Slope_Type"]) as ucur:
-                            for urow in ucur:
-                                rel = (urow[0] or "").strip()
-                                if rel == "LessEqual":
-                                    mapped = "Down Slope"
-                                elif rel == "Greater":
-                                    mapped = "Up Slope"
-                                else:
-                                    mapped = rel if rel else None
-                                urow[1] = mapped
-                                ucur.updateRow(urow)
+            if not final_path or not arcpy.Exists(final_path):
+                _warn("Above/Below polygon layer not found; skipping Identity overlay to SVTM layers.")
+                overlay_ok = False
+            else:
+                svtm_variants = [
+                    ("SVTM (site)", svtm_path),
+                    ("SVTM Building Buffer No Building", svtm_bbuf_erase_path)
+                ]
+                for label, svtm_fc in svtm_variants:
+                    if not svtm_fc or not arcpy.Exists(svtm_fc):
+                        _warn(f"Skipping Identity for {label}: source does not exist: {svtm_fc}")
+                        overlay_ok = False
+                        continue
+
+                    _msg(f"Identity overlay for {label}...")
+                    temp_svtm = os.path.join("in_memory", f"svtm_temp_{datetime.now().strftime('%H%M%S')}")
+                    ident_tmp = os.path.join("in_memory", f"svtm_ident_{datetime.now().strftime('%H%M%S')}")
+
+                    arcpy.management.CopyFeatures(svtm_fc, temp_svtm)
+
+                    existing_fields = [f.name for f in arcpy.ListFields(temp_svtm)]
+                    if "Relation" in existing_fields:
                         try:
-                            arcpy.management.DeleteField(svtm_fc, "Relation")
-                        except Exception:
-                            pass
-                    _msg(f"Identity overlay applied for {label}.")
-                except Exception as ex_copy:
-                    _warn(f"Could not overwrite {label} with identity result: {ex_copy}")
+                            arcpy.management.DeleteField(temp_svtm, "Relation")
+                        except Exception as ex_del:
+                            _warn(f"Could not delete existing 'Relation' on temp SVTM for {label}: {ex_del}")
+
+                    arcpy.analysis.Identity(temp_svtm, final_path, ident_tmp)
+
+                    try:
+                        if arcpy.Exists(svtm_fc):
+                            arcpy.management.Delete(svtm_fc)
+                        arcpy.management.CopyFeatures(ident_tmp, svtm_fc)
+
+                        fields_after = [f.name for f in arcpy.ListFields(svtm_fc)]
+                        if "Relation" in fields_after:
+                            if "Slope_Type" not in fields_after:
+                                arcpy.AddField_management(svtm_fc, "Slope_Type", "TEXT", field_length=30)
+                            with arcpy.da.UpdateCursor(svtm_fc, ["Relation", "Slope_Type"]) as ucur:
+                                for urow in ucur:
+                                    rel = (urow[0] or "").strip()
+                                    if rel == "LessEqual":
+                                        mapped = "Down Slope"
+                                    elif rel == "Greater":
+                                        mapped = "Up Slope"
+                                    else:
+                                        mapped = rel if rel else None
+                                    urow[1] = mapped
+                                    ucur.updateRow(urow)
+                            try:
+                                arcpy.management.DeleteField(svtm_fc, "Relation")
+                            except Exception as ex_del_rel:
+                                _warn(f"Could not delete 'Relation' on {label}: {ex_del_rel}")
+                        _msg(f"Identity overlay applied for {label}.")
+                    except Exception as ex_copy:
+                        overlay_ok = False
+                        _warn(f"Could not overwrite {label} with identity result: {ex_copy}")
         except Exception as ex_ident:
+            overlay_ok = False
             _warn(f"Failed while overlaying Above/Below onto SVTM: {ex_ident}")
 
-        # Restore env
         arcpy.env.cellSize = old_cell
         arcpy.env.mask = None
         arcpy.env.extent = None
         arcpy.env.outputCoordinateSystem = None
 
-        # Integrated Slope Analysis — run for two polygon inputs
-        try:
-            self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_path, add_to_map=add_to_map, label="SVTM (site)")
-        except Exception as ex:
-            _warn(f"Slope Analysis failed for SVTM (site): {ex}")
-        try:
-            self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_bbuf_erase_path, add_to_map=add_to_map, label="SVTM Building Buffer No Building")
-        except Exception as ex:
-            _warn(f"Slope Analysis failed for SVTM Building Buffer No Building: {ex}")
+        if overlay_ok and final_path and arcpy.Exists(final_path):
+            try:
+                self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_path, add_to_map=add_to_map, label="SVTM (site)")
+            except Exception as ex:
+                _warn(f"Slope Analysis failed for SVTM (site): {ex}")
+            try:
+                self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_bbuf_erase_path, add_to_map=add_to_map, label="SVTM Building Buffer No Building")
+            except Exception as ex:
+                _warn(f"Slope Analysis failed for SVTM Building Buffer No Building: {ex}")
+        else:
+            _warn("Skipping slope analysis because Above/Below overlay did not complete or layer is missing.")
 
         try:
             arcpy.management.Delete("in_memory")
@@ -820,12 +820,25 @@ class BushfireToolboxV10(object):
         for orig_field, area_field_name, pct_field_name in class_field_mappings:
             if area_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
                 arcpy.AddField_management(out_fc, area_field_name, "DOUBLE")
-            arcpy.management.CalculateField(out_fc, area_field_name, expression=f"!{orig_field}!", expression_type="PYTHON3")
+            arcpy.management.CalculateField(
+                out_fc,
+                area_field_name,
+                expression=f"!{orig_field}! if !{orig_field}! is not None else 0",
+                expression_type="PYTHON3"
+            )
             if pct_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
                 arcpy.AddField_management(out_fc, pct_field_name, "DOUBLE")
-            arcpy.management.CalculateField(out_fc, pct_field_name,
-                                            expression=f"(!{area_field_name}! / !{area_field}!) * 100 if (!{area_field}! > 0) else 0",
-                                            expression_type="PYTHON3")
+            arcpy.management.CalculateField(
+                out_fc,
+                pct_field_name,
+                expression=(
+                    f"("
+                    f"( !{area_field_name}! if !{area_field_name}! is not None else 0 ) / "
+                    f"( !{area_field}! if !{area_field}! is not None and !{area_field}! > 0 else 1 )"
+                    f") * 100"
+                ),
+                expression_type="PYTHON3"
+            )
 
         _msg(f"Slope analysis output created: {out_fc}")
 
