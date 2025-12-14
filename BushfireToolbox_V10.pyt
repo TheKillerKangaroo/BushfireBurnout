@@ -471,8 +471,18 @@ class BushfireToolboxV10(object):
                         _msg(f"Overwrite enabled. Removing previous '{new_name}'...")
                         arcpy.management.Delete(new_path)
                     else:
-                        new_path = _unique_rename(new_path, "FeatureClass")
-                        new_name = os.path.basename(new_path)
+                        # Generate unique name using timestamp
+                        stamp = datetime.now().strftime("%Y%m%d")
+                        candidate = f"{new_name}_{stamp}"
+                        candidate_path = os.path.join(fds_path, candidate)
+                        i = 1
+                        while arcpy.Exists(candidate_path):
+                            candidate = f"{new_name}_{stamp}_{i}"
+                            candidate_path = os.path.join(fds_path, candidate)
+                            i += 1
+                        _msg(f"Dataset '{new_name}' exists; will use '{candidate}' instead.")
+                        new_name = candidate
+                        new_path = candidate_path
                 
                 _msg(f"Renaming {final_name} to {new_name}...")
                 arcpy.management.Rename(final_path, new_path, "FeatureClass")
