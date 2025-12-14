@@ -455,6 +455,52 @@ class BushfireToolboxV10(object):
             _msg(f"Above/Below polygons created: {final_path}")
         else:
             _warn("No Above/Below polygons to merge.")
+        
+        # Update Relation field values and rename the dataset
+        if final_path and arcpy.Exists(final_path):
+            try:
+                _msg("Updating Relation field values to friendly names...")
+                fields_list = [f.name for f in arcpy.ListFields(final_path)]
+                if "Relation" in fields_list:
+                    with arcpy.da.UpdateCursor(final_path, ["Relation"]) as ucur:
+                        for urow in ucur:
+                            rel_val = (urow[0] or "").strip()
+                            if rel_val.lower() == "lessequal":
+                                urow[0] = "Up Slope"
+                            elif rel_val.lower() == "greater":
+                                urow[0] = "Down Slope"
+                            ucur.updateRow(urow)
+                    _msg("Relation field values updated.")
+                
+                # Rename the dataset to the new format
+                new_name = f"AEP{project_number}_Slope_Class_{int(split_elev)}m"
+                new_path = os.path.join(fds_path, new_name)
+                
+                # Handle existing dataset with same name
+                if arcpy.Exists(new_path):
+                    if overwrite_outputs:
+                        _msg(f"Overwrite enabled. Removing previous '{new_name}'...")
+                        arcpy.management.Delete(new_path)
+                    else:
+                        # Generate unique name using timestamp
+                        stamp = datetime.now().strftime("%Y%m%d")
+                        candidate = f"{new_name}_{stamp}"
+                        candidate_path = os.path.join(fds_path, candidate)
+                        i = 1
+                        while arcpy.Exists(candidate_path):
+                            candidate = f"{new_name}_{stamp}_{i}"
+                            candidate_path = os.path.join(fds_path, candidate)
+                            i += 1
+                        _msg(f"Dataset '{new_name}' exists; will use '{candidate}' instead.")
+                        new_name = candidate
+                        new_path = candidate_path
+                
+                _msg(f"Renaming {final_name} to {new_name}...")
+                arcpy.management.Rename(final_path, new_path, "FeatureClass")
+                final_path = new_path
+                _msg(f"Renamed to: {final_path}")
+            except Exception as ex_rename:
+                _warn(f"Could not update/rename Above/Below layer: {ex_rename}")
 
         # Overlay Above/Below onto SVTM layers via Identity, add Slope_Type mapping
         # IMPORTANT: This overlay must occur before slope analysis is executed.
