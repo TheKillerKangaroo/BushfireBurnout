@@ -299,6 +299,7 @@ class BushfireToolboxV10(object):
         _msg(f"Overwrite: {overwrite_outputs}")
         _msg(f"Add to map: {add_to_map}")
 
+        # Validate building geometry
         try:
             bdesc = arcpy.Describe(building_fc)
             if getattr(bdesc, "shapeType", "").lower() != "polygon":
@@ -308,6 +309,7 @@ class BushfireToolboxV10(object):
 
         fds_path, sr = _ensure_fds(workspace)
 
+        # Subject site selection
         safe_project = project_number.replace("'", "''")
         where = f"project_number = '{safe_project}'"
         subject_layer = "subject_site_layer"
@@ -316,18 +318,21 @@ class BushfireToolboxV10(object):
         if int(arcpy.management.GetCount(subject_layer).getOutput(0)) == 0:
             raise arcpy.ExecuteError(f"No features found for project_number {project_number}.")
 
+        # Site buffer
         buffer_name = f"AEP{project_number}_Site_Buffer_{int(buffer_distance)}"
         buffer_path = os.path.join(fds_path, buffer_name)
         buffer_path = _prepare_output(buffer_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(subject_layer, buffer_path, f"{buffer_distance} Meters", dissolve_option="ALL")
         _msg(f"Site buffer: {buffer_path}")
 
+        # Contours clip
         clipped_name = f"AEP{project_number}_2m_Contours"
         clipped_path = os.path.join(fds_path, clipped_name)
         clipped_path = _prepare_output(clipped_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(contours_fc, buffer_path, clipped_path)
         _msg(f"Contours clipped: {clipped_path}")
 
+        # SVTM clip to site buffer
         svtm_date = datetime.now().strftime("%Y%m%d")
         svtm_name = f"AEP{project_number}_SVTM_{svtm_date}"
         svtm_path = os.path.join(fds_path, svtm_name)
@@ -336,6 +341,7 @@ class BushfireToolboxV10(object):
         arcpy.analysis.Clip("svtm_layer", buffer_path, svtm_path)
         _msg(f"SVTM clipped: {svtm_path}")
 
+        # BFPL clip to site buffer
         bfpl_path = None
         try:
             bfpl_name = f"AEP{project_number}_BFPL_{svtm_date}"
@@ -347,24 +353,28 @@ class BushfireToolboxV10(object):
         except Exception as ex_bfpl:
             _warn(f"Could not clip BFPL: {ex_bfpl}")
 
+        # Building buffer
         bbuf_name = f"AEP{project_number}_Building_Buffer_{int(building_buffer_distance)}M"
         bbuf_path = os.path.join(fds_path, bbuf_name)
         bbuf_path = _prepare_output(bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(building_fc, bbuf_path, f"{building_buffer_distance} Meters", dissolve_option="ALL")
         _msg(f"Building buffer: {bbuf_path}")
 
+        # SVTM clip to building buffer
         svtm_bbuf_name = f"AEP{project_number}_SVTM_Bld_Buffer_{svtm_date}"
         svtm_bbuf_path = os.path.join(fds_path, svtm_bbuf_name)
         svtm_bbuf_path = _prepare_output(svtm_bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(svtm_path, bbuf_path, svtm_bbuf_path)
         _msg(f"SVTM within building buffer: {svtm_bbuf_path}")
 
+        # Erase buildings from SVTM building buffer
         svtm_bbuf_erase_name = f"AEP{project_number}_SVTM_Bld_Buffer_NoBld_{svtm_date}"
         svtm_bbuf_erase_path = os.path.join(fds_path, svtm_bbuf_erase_name)
         svtm_bbuf_erase_path = _prepare_output(svtm_bbuf_erase_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Erase(svtm_bbuf_path, building_fc, svtm_bbuf_erase_path)
         _msg(f"SVTM bld buffer no-buildings: {svtm_bbuf_erase_path}")
 
+        # TIN from clipped contours
         tin_name = f"AEP{project_number}_TIN"
         tin_path = _tin_output_path(workspace, tin_name)
         if arcpy.Exists(tin_path):
@@ -377,6 +387,7 @@ class BushfireToolboxV10(object):
         arcpy.ddd.CreateTin(out_tin=tin_path, spatial_reference=sr, in_features=in_feats, constrained_delaunay="DELAUNAY")
         _msg("TIN created.")
 
+        # DSM from TIN, Above/Below splitting with threshold
         _msg("Creating DSM (1 m) from TIN and performing Above/Below splitting...")
         old_cell = arcpy.env.cellSize
         arcpy.env.mask = buffer_path
@@ -445,6 +456,8 @@ class BushfireToolboxV10(object):
         else:
             _warn("No Above/Below polygons to merge.")
 
+        # Overlay Above/Below onto SVTM layers via Identity, add Slope_Type mapping
+        # IMPORTANT: This overlay must occur before slope analysis is executed.
         overlay_ok = True
         try:
             if not final_path or not arcpy.Exists(final_path):
@@ -467,6 +480,7 @@ class BushfireToolboxV10(object):
 
                     arcpy.management.CopyFeatures(svtm_fc, temp_svtm)
 
+                    # Remove pre-existing Relation to avoid field collision
                     existing_fields = [f.name for f in arcpy.ListFields(temp_svtm)]
                     if "Relation" in existing_fields:
                         try:
@@ -474,8 +488,10 @@ class BushfireToolboxV10(object):
                         except Exception as ex_del:
                             _warn(f"Could not delete existing 'Relation' on temp SVTM for {label}: {ex_del}")
 
+                    # Perform Identity overlay
                     arcpy.analysis.Identity(temp_svtm, final_path, ident_tmp)
 
+                    # Overwrite original SVTM with result and map Relation -> Slope_Type
                     try:
                         if arcpy.Exists(svtm_fc):
                             arcpy.management.Delete(svtm_fc)
@@ -496,6 +512,7 @@ class BushfireToolboxV10(object):
                                         mapped = rel if rel else None
                                     urow[1] = mapped
                                     ucur.updateRow(urow)
+                            # Remove Relation field after mapping
                             try:
                                 arcpy.management.DeleteField(svtm_fc, "Relation")
                             except Exception as ex_del_rel:
@@ -508,11 +525,13 @@ class BushfireToolboxV10(object):
             overlay_ok = False
             _warn(f"Failed while overlaying Above/Below onto SVTM: {ex_ident}")
 
+        # Restore env
         arcpy.env.cellSize = old_cell
         arcpy.env.mask = None
         arcpy.env.extent = None
         arcpy.env.outputCoordinateSystem = None
 
+        # Run slope analysis only if overlay completed successfully and Above/Below exists
         if overlay_ok and final_path and arcpy.Exists(final_path):
             try:
                 self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_path, add_to_map=add_to_map, label="SVTM (site)")
@@ -795,6 +814,7 @@ class BushfireToolboxV10(object):
         tab_case_field = [f.name for f in arcpy.ListFields(tab_area_tbl)][0]
         arcpy.management.JoinField(out_fc, "ZoneID", tab_area_tbl, tab_case_field, None)
 
+        # Identify class fields added by TabulateArea and create clearer area/percent fields
         tab_fields_tbl = [f for f in arcpy.ListFields(tab_area_tbl) if f.name != tab_case_field and f.type in ("Double", "Single", "Integer", "SmallInteger", "OID")]
         class_field_mappings = []
         for f in tab_fields_tbl:
@@ -817,15 +837,19 @@ class BushfireToolboxV10(object):
             tb = traceback.format_exc()
             raise arcpy.ExecuteError(f"Failed to calculate polygon areas: {e}\n{tb}")
 
+        # Hardened calculations: handle NULLs and zero-area safely
         for orig_field, area_field_name, pct_field_name in class_field_mappings:
+            # Add area field if missing
             if area_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
                 arcpy.AddField_management(out_fc, area_field_name, "DOUBLE")
+            # Copy values from TabulateArea table field, converting NULLs to 0
             arcpy.management.CalculateField(
                 out_fc,
                 area_field_name,
                 expression=f"!{orig_field}! if !{orig_field}! is not None else 0",
                 expression_type="PYTHON3"
             )
+            # Add percent field and calculate percent with robust guarding
             if pct_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
                 arcpy.AddField_management(out_fc, pct_field_name, "DOUBLE")
             arcpy.management.CalculateField(
