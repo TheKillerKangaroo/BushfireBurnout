@@ -16,13 +16,13 @@ FD_NAME = "BufferLayers"
 FD_ALT_NAME = "BufferLayers_EPSG8058"
 
 def _msg(msg):
-    arcpy.AddMessage(f"[MontyGIS] {msg}")
+    arcpy.AddMessage(msg)
 
 def _warn(msg):
-    arcpy.AddWarning(f"[MontyGIS – Warning] {msg}")
+    arcpy.AddWarning(msg)
 
 def _ensure_fds(workspace):
-    _msg("Summoning the Holy Spatial Reference (EPSG 8058) for the feature dataset...")
+    _msg("Ensuring feature dataset exists in EPSG:8058...")
     arcpy.env.workspace = workspace
     sr_target = arcpy.SpatialReference(TARGET_EPSG)
 
@@ -31,7 +31,7 @@ def _ensure_fds(workspace):
             desc = arcpy.Describe(fds_path)
             return desc.spatialReference.factoryCode == TARGET_EPSG
         except Exception as ex:
-            _warn(f"Spat upon by Describe while inspecting {fds_path}: {ex}")
+            _warn(f"Describe failed for '{fds_path}': {ex}")
             return False
 
     fds_pref = os.path.join(workspace, FD_NAME)
@@ -39,21 +39,21 @@ def _ensure_fds(workspace):
 
     if arcpy.Exists(fds_pref):
         if _fds_sr_ok(fds_pref):
-            _msg(f"Found existing feature dataset {fds_pref} in the proper projection. Nobody expects EPSG 8058!")
+            _msg(f"Using feature dataset: {fds_pref} (EPSG:8058).")
             return fds_pref, sr_target
         else:
-            _warn(f"Feature dataset {fds_pref} is of dubious projection. We shall forge {fds_alt} instead.")
+            _warn(f"Feature dataset '{fds_pref}' is not EPSG:8058. Using '{fds_alt}'.")
 
     if arcpy.Exists(fds_alt):
-        _msg(f"Reusing alternate feature dataset {fds_alt}. It got better.")
+        _msg(f"Using alternate feature dataset: {fds_alt}.")
     else:
-        _msg(f"Creating alternate feature dataset {fds_alt}. Bring out your data!")
+        _msg(f"Creating feature dataset: {fds_alt} (EPSG:8058).")
         arcpy.management.CreateFeatureDataset(workspace, FD_ALT_NAME, sr_target)
 
     return fds_alt, sr_target
 
 def _delete_name_globally(gdb_workspace, name):
-    _msg(f"Scouring geodatabase {gdb_workspace} for anything named '{name}'...")
+    _msg(f"Deleting existing items named '{name}' across geodatabase...")
     prev = arcpy.env.workspace
     try:
         arcpy.env.workspace = gdb_workspace
@@ -61,30 +61,30 @@ def _delete_name_globally(gdb_workspace, name):
         root_candidate = os.path.join(gdb_workspace, name)
         try:
             if arcpy.Exists(root_candidate):
-                _msg(f"  • Deleting root feature class {root_candidate}.")
                 arcpy.management.Delete(root_candidate)
+                _msg(f"Deleted root item: {root_candidate}")
         except Exception as ex_root:
-            _warn(f"  • Could not delete root candidate {root_candidate}: {ex_root}")
+            _warn(f"Delete failed for root '{root_candidate}': {ex_root}")
 
         try:
             for fc in arcpy.ListFeatureClasses(name):
-                _msg(f"  • Executing feature class {fc} in root.")
                 try:
                     arcpy.management.Delete(fc)
+                    _msg(f"Deleted feature class: {fc}")
                 except Exception as ex_fc:
-                    _warn(f"    • Could not delete {fc} from root: {ex_fc}")
+                    _warn(f"Delete failed for feature class '{fc}': {ex_fc}")
         except Exception as ex_list_root:
-            _warn(f"  • ListFeatureClasses failed in root: {ex_list_root}")
+            _warn(f"ListFeatureClasses failed in root: {ex_list_root}")
 
         try:
             for ras in arcpy.ListRasters(name):
-                _msg(f"  • Banishing raster {ras}.")
                 try:
                     arcpy.management.Delete(ras)
+                    _msg(f"Deleted raster: {ras}")
                 except Exception as ex_r:
-                    _warn(f"    • Could not delete raster {ras}: {ex_r}")
+                    _warn(f"Delete failed for raster '{ras}': {ex_r}")
         except Exception as ex_list_rast:
-            _warn(f"  • ListRasters failed in root: {ex_list_rast}")
+            _warn(f"ListRasters failed in root: {ex_list_rast}")
 
         try:
             for ds in arcpy.ListDatasets(feature_type='feature') or []:
@@ -92,33 +92,33 @@ def _delete_name_globally(gdb_workspace, name):
                 candidate_in_ds = os.path.join(ds_path, name)
                 try:
                     if arcpy.Exists(candidate_in_ds):
-                        _msg(f"  • Deleting {candidate_in_ds} inside dataset {ds}.")
                         arcpy.management.Delete(candidate_in_ds)
+                        _msg(f"Deleted in dataset '{ds}': {candidate_in_ds}")
                 except Exception as ex_cds:
-                    _warn(f"    • Could not delete {candidate_in_ds}: {ex_cds}")
+                    _warn(f"Delete failed in dataset '{ds}' for '{candidate_in_ds}': {ex_cds}")
 
                 try:
                     arcpy.env.workspace = ds_path
                     for fc in arcpy.ListFeatureClasses(name):
-                        _msg(f"  • Executing feature class {fc} inside {ds}.")
                         try:
                             arcpy.management.Delete(fc)
+                            _msg(f"Deleted feature class in dataset '{ds}': {fc}")
                         except Exception as ex_fc_ds:
-                            _warn(f"    • Could not delete {fc} from {ds}: {ex_fc_ds}")
+                            _warn(f"Delete failed in dataset '{ds}' for feature class '{fc}': {ex_fc_ds}")
                     for ras in arcpy.ListRasters(name):
-                        _msg(f"  • Banishing raster {ras} from {ds}.")
                         try:
                             arcpy.management.Delete(ras)
+                            _msg(f"Deleted raster in dataset '{ds}': {ras}")
                         except Exception as ex_rds:
-                            _warn(f"    • Could not delete raster {ras} from {ds}: {ex_rds}")
+                            _warn(f"Delete failed in dataset '{ds}' for raster '{ras}': {ex_rds}")
                 except Exception as ex_inner_ds:
-                    _warn(f"  • Could not enumerate inside dataset {ds}: {ex_inner_ds}")
+                    _warn(f"Enumeration failed inside dataset '{ds}': {ex_inner_ds}")
         except Exception as ex_ds_list:
-            _warn(f"  • Could not list datasets: {ex_ds_list}")
+            _warn(f"ListDatasets failed: {ex_ds_list}")
 
     finally:
         arcpy.env.workspace = prev
-    _msg("Global purge complete.")
+    _msg("Global delete complete.")
 
 def _unique_rename(path, data_type="FeatureClass"):
     if not arcpy.Exists(path):
@@ -133,22 +133,26 @@ def _unique_rename(path, data_type="FeatureClass"):
         candidate = f"{base}_{stamp}_{i}"
         candidate_path = os.path.join(parent, candidate)
         i += 1
-    _msg(f"Object '{base}' exists; renaming to '{candidate}'.")
+    _msg(f"Existing name detected; renaming '{base}' to '{candidate}'.")
     arcpy.management.Rename(path, candidate, data_type)
     return candidate_path
 
-def _prepare_output(path, overwrite, data_type="FeatureClass", gdb_workspace=None):
+def _prepare_output(path, overwrite, data_type="FeatureClass", gdb_workspace=None, geometry_type=None, spatial_ref=None):
     name = os.path.basename(path)
-    if overwrite:
-        _msg(f"Overwrite enabled. Removing previous '{name}'...")
-        if gdb_workspace:
-            _delete_name_globally(gdb_workspace, name)
-        elif arcpy.Exists(path):
-            arcpy.management.Delete(path)
-        return path
-    else:
-        _msg(f"Overwrite disabled. Avoiding name clash for '{name}'.")
+    if overwrite and arcpy.Exists(path):
+        _msg(f"Overwrite enabled; removing existing '{name}'.")
+        arcpy.management.Delete(path)
+    elif arcpy.Exists(path):
+        _msg(f"Overwrite disabled; ensuring unique name for '{name}'.")
         return _unique_rename(path, data_type)
+
+    if not arcpy.Exists(path) and geometry_type:
+        parent_dir = os.path.dirname(path)
+        base_name = os.path.basename(path)
+        _msg(f"Executing CreateFeatureclass for '{base_name}' with {geometry_type} geometry.")
+        arcpy.management.CreateFeatureclass(parent_dir, base_name, geometry_type, spatial_reference=spatial_ref)
+    
+    return path
 
 def _tin_output_path(workspace, tin_name):
     if workspace.lower().endswith(".gdb"):
@@ -157,7 +161,7 @@ def _tin_output_path(workspace, tin_name):
     else:
         tin_folder = os.path.join(workspace, "TINs")
     if not os.path.exists(tin_folder):
-        _msg(f"Constructing TIN lair at '{tin_folder}'.")
+        _msg(f"Creating TIN output folder: {tin_folder}")
         os.makedirs(tin_folder, exist_ok=True)
     return os.path.join(tin_folder, tin_name)
 
@@ -171,8 +175,7 @@ class BushfireToolboxV10(object):
     def __init__(self):
         self.label = "Bushfire Preliminary Assessment (V10)"
         self.description = (
-            "Creates site and building buffers, clips contours, SVTM and BFPL, builds a TIN, "
-            "runs Above/Below splitting, and runs integrated slope analysis on SVTM polygons."
+            "Generates buffers, clips contours/SVTM/BFPL, builds a TIN and DSM, classifies elevation (above/below threshold), overlays onto SVTM, and runs slope analysis. Calculates APZ and effectives slopes against SVTM Building Buffer (no buildings) polygons."
         )
         self.canRunInBackground = True
 
@@ -267,17 +270,17 @@ class BushfireToolboxV10(object):
     def updateParameters(self, parameters):
         if parameters[1].altered is False:
             try:
-                _msg("Consulting the remote oracle for project numbers (feature service)...")
+                _msg("Loading project numbers from feature service...")
                 with arcpy.da.SearchCursor(FEATURE_SERVICE_URL, ["project_number"]) as cursor:
                     vals = sorted({row[0] for row in cursor if row[0]})
                 parameters[1].filter.list = vals
-                _msg(f"Loaded {len(vals)} project numbers.")
+                _msg(f"Project numbers loaded: {len(vals)}")
             except Exception as ex:
-                _warn(f"Could not load project numbers: {ex}")
+                _warn(f"Project number load failed: {ex}")
         return
 
     def execute(self, parameters, messages):
-        _msg("Welcome to Bushfire Preliminary Assessment V10.")
+        _msg("Starting Bushfire Preliminary Assessment (V10).")
 
         workspace = parameters[0].valueAsText
         project_number = parameters[1].valueAsText
@@ -293,19 +296,19 @@ class BushfireToolboxV10(object):
         _msg(f"Project: {project_number}")
         _msg(f"Site buffer: {buffer_distance} m")
         _msg(f"Contours: {contours_fc}")
-        _msg(f"Building: {building_fc}")
+        _msg(f"Building outlines: {building_fc}")
         _msg(f"Building buffer: {building_buffer_distance} m")
-        _msg(f"Above/Below split elevation: {split_elev} m")
-        _msg(f"Overwrite: {overwrite_outputs}")
+        _msg(f"Threshold (Above/Below): {split_elev} m")
+        _msg(f"Overwrite outputs: {overwrite_outputs}")
         _msg(f"Add to map: {add_to_map}")
 
         # Validate building geometry
         try:
             bdesc = arcpy.Describe(building_fc)
             if getattr(bdesc, "shapeType", "").lower() != "polygon":
-                raise arcpy.ExecuteError(f"Building feature class must be polygon. Found: {bdesc.shapeType}.")
+                raise arcpy.ExecuteError(f"Building feature class must be polygon; found '{bdesc.shapeType}'.")
         except Exception as ex:
-            raise arcpy.ExecuteError(f"Could not validate building feature class geometry: {ex}")
+            raise arcpy.ExecuteError(f"Building feature class validation failed: {ex}")
 
         fds_path, sr = _ensure_fds(workspace)
 
@@ -313,17 +316,17 @@ class BushfireToolboxV10(object):
         safe_project = project_number.replace("'", "''")
         where = f"project_number = '{safe_project}'"
         subject_layer = "subject_site_layer"
-        _msg(f"Selecting subject site with: {where}")
+        _msg(f"Selecting subject site with WHERE: {where}")
         arcpy.management.MakeFeatureLayer(FEATURE_SERVICE_URL, subject_layer, where)
         if int(arcpy.management.GetCount(subject_layer).getOutput(0)) == 0:
-            raise arcpy.ExecuteError(f"No features found for project_number {project_number}.")
+            raise arcpy.ExecuteError(f"No features found for project_number '{project_number}'.")
 
         # Site buffer
         buffer_name = f"AEP{project_number}_Site_Buffer_{int(buffer_distance)}"
         buffer_path = os.path.join(fds_path, buffer_name)
         buffer_path = _prepare_output(buffer_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(subject_layer, buffer_path, f"{buffer_distance} Meters", dissolve_option="ALL")
-        _msg(f"Site buffer: {buffer_path}")
+        _msg(f"Site buffer created: {buffer_path}")
 
         # Contours clip
         clipped_name = f"AEP{project_number}_2m_Contours"
@@ -351,44 +354,44 @@ class BushfireToolboxV10(object):
             arcpy.analysis.Clip("bfpl_layer", buffer_path, bfpl_path)
             _msg(f"BFPL clipped: {bfpl_path}")
         except Exception as ex_bfpl:
-            _warn(f"Could not clip BFPL: {ex_bfpl}")
+            _warn(f"BFPL clip failed: {ex_bfpl}")
 
         # Building buffer
         bbuf_name = f"AEP{project_number}_Building_Buffer_{int(building_buffer_distance)}M"
         bbuf_path = os.path.join(fds_path, bbuf_name)
         bbuf_path = _prepare_output(bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Buffer(building_fc, bbuf_path, f"{building_buffer_distance} Meters", dissolve_option="ALL")
-        _msg(f"Building buffer: {bbuf_path}")
+        _msg(f"Building buffer created: {bbuf_path}")
 
         # SVTM clip to building buffer
         svtm_bbuf_name = f"AEP{project_number}_SVTM_Bld_Buffer_{svtm_date}"
         svtm_bbuf_path = os.path.join(fds_path, svtm_bbuf_name)
         svtm_bbuf_path = _prepare_output(svtm_bbuf_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Clip(svtm_path, bbuf_path, svtm_bbuf_path)
-        _msg(f"SVTM within building buffer: {svtm_bbuf_path}")
+        _msg(f"SVTM clipped to building buffer: {svtm_bbuf_path}")
 
         # Erase buildings from SVTM building buffer
         svtm_bbuf_erase_name = f"AEP{project_number}_SVTM_Bld_Buffer_NoBld_{svtm_date}"
         svtm_bbuf_erase_path = os.path.join(fds_path, svtm_bbuf_erase_name)
         svtm_bbuf_erase_path = _prepare_output(svtm_bbuf_erase_path, overwrite_outputs, "FeatureClass", workspace)
         arcpy.analysis.Erase(svtm_bbuf_path, building_fc, svtm_bbuf_erase_path)
-        _msg(f"SVTM bld buffer no-buildings: {svtm_bbuf_erase_path}")
+        _msg(f"SVTM building buffer (buildings erased): {svtm_bbuf_erase_path}")
 
         # TIN from clipped contours
         tin_name = f"AEP{project_number}_TIN"
         tin_path = _tin_output_path(workspace, tin_name)
         if arcpy.Exists(tin_path):
-            _msg(f"Sacking existing TIN: {tin_path}")
+            _msg(f"Removing existing TIN: {tin_path}")
             arcpy.management.Delete(tin_path)
         z_field = self._infer_z_field(clipped_path)
-        _msg(f"Elevation field for TIN: {z_field}")
+        _msg(f"TIN elevation field: {z_field}")
         in_feats = [[clipped_path, z_field, "hardline"]]
-        _msg(f"Creating TIN at {tin_path} ...")
+        _msg(f"Creating TIN: {tin_path}")
         arcpy.ddd.CreateTin(out_tin=tin_path, spatial_reference=sr, in_features=in_feats, constrained_delaunay="DELAUNAY")
-        _msg("TIN created.")
+        _msg("TIN created")
 
         # DSM from TIN, Above/Below splitting with threshold
-        _msg("Creating DSM (1 m) from TIN and performing Above/Below splitting...")
+        _msg("Creating DSM (1 m) from TIN and classifying polygons by threshold...")
         old_cell = arcpy.env.cellSize
         arcpy.env.mask = buffer_path
         arcpy.env.extent = buffer_path
@@ -400,9 +403,9 @@ class BushfireToolboxV10(object):
         dsm_path = os.path.join(workspace, dsm_name)
         dsm_path = _prepare_output(dsm_path, overwrite_outputs, "RasterDataset", workspace)
         arcpy.management.CopyRaster(dsm_tmp, dsm_path, pixel_type="32_BIT_FLOAT")
-        _msg(f"DSM saved to {dsm_path}.")
+        _msg(f"DSM saved: {dsm_path}")
 
-        _msg("Raster-to-polygon and elevation field population...")
+        _msg("Converting DSM to polygons and populating elevation...")
         dsm_int = arcpy.sa.Int(arcpy.sa.Raster(dsm_path))
         dsm_poly_name = f"AEP{project_number}_DSM_1m_Polys"
         dsm_poly_path = os.path.join(fds_path, dsm_poly_name)
@@ -416,7 +419,7 @@ class BushfireToolboxV10(object):
                     row[1] = float(row[0])
                     cur.updateRow(row)
 
-        _msg(f"Selecting polygons Above/Below {split_elev} m and dissolving...")
+        _msg(f"Selecting and dissolving polygons above/below {split_elev} m...")
         greater_tmp = os.path.join("in_memory", "dsm_greater")
         lesseq_tmp = os.path.join("in_memory", "dsm_lesseq")
         arcpy.analysis.Select(dsm_poly_path, greater_tmp, f"Elevation > {split_elev}")
@@ -434,7 +437,7 @@ class BushfireToolboxV10(object):
                     cur.updateRow(row)
             parts.append(greater_diss)
         else:
-            _warn("No polygons found above the threshold.")
+            _warn("No polygons above threshold.")
 
         if int(arcpy.management.GetCount(lesseq_tmp).getOutput(0)) > 0:
             arcpy.management.Dissolve(lesseq_tmp, lesseq_diss)
@@ -445,23 +448,43 @@ class BushfireToolboxV10(object):
                     cur.updateRow(row)
             parts.append(lesseq_diss)
         else:
-            _warn("No polygons found below or equal to the threshold.")
+            _warn("No polygons below/equal to threshold.")
 
-        final_name = f"AEP{project_number}_DSM_AboveBelow_{svtm_date}"
+        # Requested name format: AEP{project_number}_Slope_Classification_{threshold}m_{date}
+        final_name = f"AEP{project_number}_Slope_Classification_{int(split_elev)}m_{svtm_date}"
         final_path = os.path.join(fds_path, final_name)
-        final_path = _prepare_output(final_path, overwrite_outputs, "FeatureClass", workspace)
+        final_path = _prepare_output(final_path, overwrite_outputs, "FeatureClass", workspace, geometry_type="POLYGON", spatial_ref=sr)
         if parts:
             arcpy.management.Merge(parts, final_path)
-            _msg(f"Above/Below polygons created: {final_path}")
-        else:
-            _warn("No Above/Below polygons to merge.")
+            _msg(f"Slope classification polygons created: {final_path}")
 
-        # Overlay Above/Below onto SVTM layers via Identity, add Slope_Type mapping
-        # IMPORTANT: This overlay must occur before slope analysis is executed.
+            # Map Relation to Slope_Type on classification layer
+            fields_final = [f.name for f in arcpy.ListFields(final_path)]
+            if "Slope_Type" not in fields_final:
+                arcpy.AddField_management(final_path, "Slope_Type", "TEXT", field_length=30)
+            with arcpy.da.UpdateCursor(final_path, ["Relation", "Slope_Type"]) as ucur_final:
+                for urow in ucur_final:
+                    rel = (urow[0] or "").strip()
+                    if rel == "LessEqual":
+                        mapped = "Up Slope"
+                    elif rel == "Greater":
+                        mapped = "Down Slope"
+                    else:
+                        mapped = rel if rel else None
+                    urow[1] = mapped
+                    ucur_final.updateRow(urow)
+            try:
+                arcpy.management.DeleteField(final_path, "Relation")
+            except Exception as ex_del_rel_final:
+                _warn(f"Delete 'Relation' on classification layer failed: {ex_del_rel_final}")
+        else:
+            _warn("No classification polygons to merge.")
+
+        # Overlay Above/Below onto SVTM layers via Identity, map Relation -> Slope_Type
         overlay_ok = True
         try:
             if not final_path or not arcpy.Exists(final_path):
-                _warn("Above/Below polygon layer not found; skipping Identity overlay to SVTM layers.")
+                _warn("Classification layer missing; skipping SVTM overlay.")
                 overlay_ok = False
             else:
                 svtm_variants = [
@@ -470,60 +493,55 @@ class BushfireToolboxV10(object):
                 ]
                 for label, svtm_fc in svtm_variants:
                     if not svtm_fc or not arcpy.Exists(svtm_fc):
-                        _warn(f"Skipping Identity for {label}: source does not exist: {svtm_fc}")
+                        _warn(f"SVTM source missing; skipping '{label}': {svtm_fc}")
                         overlay_ok = False
                         continue
 
-                    _msg(f"Identity overlay for {label}...")
+                    _msg(f"Applying Identity overlay: {label}")
                     temp_svtm = os.path.join("in_memory", f"svtm_temp_{datetime.now().strftime('%H%M%S')}")
                     ident_tmp = os.path.join("in_memory", f"svtm_ident_{datetime.now().strftime('%H%M%S')}")
 
                     arcpy.management.CopyFeatures(svtm_fc, temp_svtm)
 
-                    # Remove pre-existing Relation to avoid field collision
                     existing_fields = [f.name for f in arcpy.ListFields(temp_svtm)]
                     if "Relation" in existing_fields:
                         try:
                             arcpy.management.DeleteField(temp_svtm, "Relation")
                         except Exception as ex_del:
-                            _warn(f"Could not delete existing 'Relation' on temp SVTM for {label}: {ex_del}")
+                            _warn(f"Delete existing 'Relation' failed for {label}: {ex_del}")
 
-                    # Perform Identity overlay
                     arcpy.analysis.Identity(temp_svtm, final_path, ident_tmp)
 
-                    # Overwrite original SVTM with result and map Relation -> Slope_Type
                     try:
                         if arcpy.Exists(svtm_fc):
                             arcpy.management.Delete(svtm_fc)
                         arcpy.management.CopyFeatures(ident_tmp, svtm_fc)
 
                         fields_after = [f.name for f in arcpy.ListFields(svtm_fc)]
-                        if "Relation" in fields_after:
-                            if "Slope_Type" not in fields_after:
-                                arcpy.AddField_management(svtm_fc, "Slope_Type", "TEXT", field_length=30)
+                        if "Slope_Type" not in fields_after and "Relation" in fields_after:
+                            arcpy.AddField_management(svtm_fc, "Slope_Type", "TEXT", field_length=30)
                             with arcpy.da.UpdateCursor(svtm_fc, ["Relation", "Slope_Type"]) as ucur:
                                 for urow in ucur:
                                     rel = (urow[0] or "").strip()
                                     if rel == "LessEqual":
-                                        mapped = "Down Slope"
-                                    elif rel == "Greater":
                                         mapped = "Up Slope"
+                                    elif rel == "Greater":
+                                        mapped = "Down Slope"
                                     else:
                                         mapped = rel if rel else None
                                     urow[1] = mapped
                                     ucur.updateRow(urow)
-                            # Remove Relation field after mapping
                             try:
                                 arcpy.management.DeleteField(svtm_fc, "Relation")
                             except Exception as ex_del_rel:
-                                _warn(f"Could not delete 'Relation' on {label}: {ex_del_rel}")
-                        _msg(f"Identity overlay applied for {label}.")
+                                _warn(f"Delete 'Relation' failed for {label}: {ex_del_rel}")
+                        _msg(f"Overlay complete: {label}")
                     except Exception as ex_copy:
                         overlay_ok = False
-                        _warn(f"Could not overwrite {label} with identity result: {ex_copy}")
+                        _warn(f"Overlay copy failed for {label}: {ex_copy}")
         except Exception as ex_ident:
             overlay_ok = False
-            _warn(f"Failed while overlaying Above/Below onto SVTM: {ex_ident}")
+            _warn(f"SVTM overlay failed: {ex_ident}")
 
         # Restore env
         arcpy.env.cellSize = old_cell
@@ -531,18 +549,219 @@ class BushfireToolboxV10(object):
         arcpy.env.extent = None
         arcpy.env.outputCoordinateSystem = None
 
-        # Run slope analysis only if overlay completed successfully and Above/Below exists
+        # Run slope analysis and CAPTURE OUTPUT FC paths
+        svtm_site_slope_fc = None
+        svtm_bbuf_slope_fc = None
         if overlay_ok and final_path and arcpy.Exists(final_path):
             try:
-                self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_path, add_to_map=add_to_map, label="SVTM (site)")
+                svtm_site_slope_fc = self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_path, add_to_map=False, label="SVTM (site)")
             except Exception as ex:
-                _warn(f"Slope Analysis failed for SVTM (site): {ex}")
+                _warn(f"Slope analysis failed (SVTM site): {ex}")
             try:
-                self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_bbuf_erase_path, add_to_map=add_to_map, label="SVTM Building Buffer No Building")
+                svtm_bbuf_slope_fc = self._run_slope_analysis(in_tin=tin_path, in_polygons=svtm_bbuf_erase_path, add_to_map=False, label="SVTM Building Buffer No Building")
             except Exception as ex:
-                _warn(f"Slope Analysis failed for SVTM Building Buffer No Building: {ex}")
+                _warn(f"Slope analysis failed (SVTM bld buffer no bld): {ex}")
         else:
-            _warn("Skipping slope analysis because Above/Below overlay did not complete or layer is missing.")
+            _warn("Skipping slope analysis: overlay incomplete or classification layer missing.")
+
+        # APZ Assessment and Visualization
+        apz_assessment_fc = None
+        apz_lines_fc = None
+        apz_poly_fc = None
+        try:
+            target_fc = svtm_bbuf_slope_fc
+            if not (target_fc and arcpy.Exists(target_fc)):
+                _warn("Slope analysis output missing; skipping APZ Assessment.")
+            else:
+                _msg("--- Initiating APZ Assessment Protocol ---")
+                
+                # Create a copy for the final APZ Assessment layer
+                apz_assessment_name = f"AEP{project_number}_APZ_Assessment_{svtm_date}"
+                apz_assessment_fc = os.path.join(fds_path, apz_assessment_name)
+                apz_assessment_fc = _prepare_output(apz_assessment_fc, overwrite_outputs, "FeatureClass", workspace, geometry_type="POLYGON", spatial_ref=sr)
+                arcpy.management.CopyFeatures(target_fc, apz_assessment_fc)
+                _msg(f"Assessment layer instantiated: {apz_assessment_fc}")
+
+                # Ensure fields exist
+                field_names = [f.name for f in arcpy.ListFields(apz_assessment_fc)]
+                if "Keith_Match" not in field_names: arcpy.AddField_management(apz_assessment_fc, "Keith_Match", "TEXT", field_length=120)
+                if "Effective_Slope" not in field_names: arcpy.AddField_management(apz_assessment_fc, "Effective_Slope", "TEXT", field_length=20)
+                if "APZ_Distance_M" not in field_names: arcpy.AddField_management(apz_assessment_fc, "APZ_Distance_M", "LONG")
+
+                vegclass_field = next((cand for cand in ("vegClass", "VegClass", "VEGCLASS") if cand in field_names), None)
+                if not vegclass_field: raise arcpy.ExecuteError("vegClass field not found.")
+
+                apz_table = {
+                    "Rainforest": {"Up slopes and flat": 38, ">0-5°": 47, ">5-10°": 57, ">10-15°": 69, ">15-20°": 81},
+                    "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland": {"Up slopes and flat": 67, ">0-5°": 79, ">5-10°": 93, ">10-15°": 100, ">15-20°": 100},
+                    "Grassy and Semi-Arid Woodland (including Mallee)": {"Up slopes and flat": 42, ">0-5°": 50, ">5-10°": 60, ">10-15°": 72, ">15-20°": 85},
+                    "Forested Wetland (excluding Coastal Swamp Forest)": {"Up slopes and flat": 34, ">0-5°": 42, ">5-10°": 51, ">10-15°": 62, ">15-20°": 73},
+                    "Tall Heath": {"Up slopes and flat": 50, ">0-5°": 56, ">5-10°": 61, ">10-15°": 67, ">15-20°": 72},
+                    "Short Heath": {"Up slopes and flat": 33, ">0-5°": 37, ">5-10°": 41, ">10-15°": 45, ">15-20°": 49},
+                    "Arid-Shrublands (acacia and chenopod)": {"Up slopes and flat": 24, ">0-5°": 27, ">5-10°": 30, ">10-15°": 34, ">15-20°": 37},
+                    "Freshwater Wetlands": {"Up slopes and flat": 19, ">0-5°": 22, ">5-10°": 25, ">10-15°": 28, ">15-20°": 30},
+                    "Grassland": {"Up slopes and flat": 36, ">0-5°": 40, ">5-10°": 45, ">10-15°": 50, ">15-20°": 55},
+                }
+
+                def norm(t): return (t or "").strip().upper()
+                
+                def map_vegclass_to_keith(vegclass_text):
+                    v = norm(vegclass_text)
+                    if v == "NOT CLASSIFIED": return "Not classified"
+                    if "RAINFOREST" in v: return "Rainforest"
+                    if ("FOREST" in v and "WET" in v) or ("FOREST" in v and "DRY" in v) or ("SCLEROPHYLL" in v) or ("PINE" in v) or ("SUB-ALPINE" in v) or ("COASTAL SWAMP FOREST" in v): return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
+                    if ("WOODLAND" in v and ("GRASSY" in v or "SEMI-ARID" in v)) or ("MALLEE" in v): return "Grassy and Semi-Arid Woodland (including Mallee)"
+                    if ("WETLAND" in v and "FOREST" in v) or ("FORESTED WETLAND" in v):
+                        if "COASTAL SWAMP FOREST" in v: return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
+                        return "Forested Wetland (excluding Coastal Swamp Forest)"
+                    if "TALL HEATH" in v: return "Tall Heath"
+                    if "SHORT HEATH" in v or ("HEATH" in v and "SHORT" in v): return "Short Heath"
+                    if "ARID" in v or "CHENOPOD" in v or ("ACACIA" in v and "SHRUB" in v): return "Arid-Shrublands (acacia and chenopod)"
+                    if ("WETLAND" in v and "FRESHWATER" in v) or ("FRESHWATER" in v): return "Freshwater Wetlands"
+                    if "GRASSLAND" in v: return "Grassland"
+                    if "FOREST" in v: return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
+                    if "WOODLAND" in v: return "Grassy and Semi-Arid Woodland (including Mallee)"
+                    if "WETLAND" in v: return "Forested Wetland (excluding Coastal Swamp Forest)"
+                    if "HEATH" in v: return "Short Heath"
+                    return "Not classified"
+
+                def effective_slope_value(slope_type, max_deg):
+                    st = (slope_type or "").strip()
+                    if st == "Up Slope": return "Up slopes and flat"
+                    try: d = float(max_deg) if max_deg is not None else None
+                    except: d = None
+                    if d is None or d < 1: return "Up slopes and flat"
+                    if d < 5: return ">0-5°"
+                    if d < 10: return ">5-10°"
+                    if d < 15: return ">10-15°"
+                    return ">15-20°"
+
+                _msg("Calculating Keith_Match, Effective_Slope, and APZ_Distance_M...")
+                with arcpy.da.UpdateCursor(apz_assessment_fc, [vegclass_field, "Slope_Type", "SLOPE_MAX_DEG", "Keith_Match", "Effective_Slope", "APZ_Distance_M"]) as ucur:
+                    for row in ucur:
+                        vegclass_val, slope_type_val, max_slope_val = row[0], row[1], row[2]
+                        
+                        keith = map_vegclass_to_keith(vegclass_val)
+                        row[3] = keith
+                        
+                        if norm(vegclass_val) == "NOT CLASSIFIED":
+                            eff_slope = "N/A"
+                        else:
+                            eff_slope = effective_slope_value(slope_type_val, max_slope_val)
+                        row[4] = eff_slope
+
+                        apz_dist = None
+                        if eff_slope == "N/A":
+                            apz_dist = 36 # Minimum grassland distance rule
+                        else:
+                            apz_row_data = apz_table.get(keith)
+                            if apz_row_data:
+                                apz_dist = apz_row_data.get(eff_slope)
+                        row[5] = int(apz_dist) if apz_dist is not None else None
+                        
+                        ucur.updateRow(row)
+                _msg("APZ Assessment calculation complete.")
+
+                # --- APZ VISUALIZATION PROTOCOL ---
+                _msg("--- Initiating APZ Visualization Protocol ---")
+
+                # Part 1: Generate Polyline Buffers
+                _msg("-> Sub-protocol: APZ Polyline Generation.")
+                apz_lines_name = f"AEP{project_number}_APZ_Buffer_Lines"
+                apz_lines_fc = os.path.join(fds_path, apz_lines_name)
+                apz_lines_fc = _prepare_output(apz_lines_fc, overwrite_outputs, "FeatureClass", workspace, geometry_type="POLYLINE", spatial_ref=sr)
+                _msg(f"   - Schema defined. Target polyline feature class: {apz_lines_fc}")
+
+                _msg("   - Appending attribute definitions to polyline schema: APZ_Distance_M, Keith_Match, Effective_Slope")
+                arcpy.management.AddField(apz_lines_fc, "APZ_Distance_M", "LONG")
+                arcpy.management.AddField(apz_lines_fc, "Keith_Match", "TEXT", field_length=120)
+                arcpy.management.AddField(apz_lines_fc, "Effective_Slope", "TEXT", field_length=20)
+                
+                # Part 2: Prepare for Unified Polygon Buffer
+                _msg("-> Sub-protocol: Unified APZ Polygon Generation.")
+                apz_buffer_polygons_to_merge = []
+                _msg("   - Transient polygon collection initialized.")
+
+                _msg("-> Initiating iterative geoprocessing loop on assessment polygons...")
+                fields_for_viz = ["SHAPE@", "APZ_Distance_M", "Keith_Match", "Effective_Slope"]
+                with arcpy.da.SearchCursor(apz_assessment_fc, fields_for_viz) as scursor, \
+                     arcpy.da.InsertCursor(apz_lines_fc, fields_for_viz) as icursor:
+                    for i, row in enumerate(scursor):
+                        poly_geom, apz_dist_val, keith_match_val, eff_slope_val = row
+                        _msg(f"  > Processing polygon OID {i+1}: APZ Distance = {apz_dist_val}m.")
+                        
+                        if apz_dist_val is None or apz_dist_val <= 0:
+                            _msg(f"    - Skipping: Invalid APZ distance ({apz_dist_val}).")
+                            continue
+                        
+                        # In-memory names for this iteration
+                        uuid_hex = uuid.uuid4().hex[:8]
+                        mem_buffer_poly = f"in_memory\\buffer_poly_{uuid_hex}"
+                        mem_clipped_poly = f"in_memory\\clipped_poly_{uuid_hex}"
+                        mem_buffer_line = f"in_memory\\buffer_line_{uuid_hex}"
+                        mem_clipped_line = f"in_memory\\clipped_line_{uuid_hex}"
+
+                        _msg("    - Executing `Buffer` operation on source building geometry.")
+                        arcpy.analysis.Buffer(building_fc, mem_buffer_poly, f"{apz_dist_val} Meters", "FULL", "ROUND", "NONE")
+                        
+                        # --- Logic for Unified Polygon ---
+                        _msg("    - Executing `Clip` to isolate buffer POLYGON within assessment boundary.")
+                        arcpy.analysis.Clip(mem_buffer_poly, poly_geom, mem_clipped_poly)
+                        if int(arcpy.management.GetCount(mem_clipped_poly).getOutput(0)) > 0:
+                            apz_buffer_polygons_to_merge.append(mem_clipped_poly)
+                            _msg("    - Staging clipped polygon for final merge.")
+                        
+                        # --- Logic for Buffer Lines ---
+                        _msg("    - Executing `PolygonToLine` conversion on buffer geometry.")
+                        arcpy.management.PolygonToLine(mem_buffer_poly, mem_buffer_line, "IGNORE_NEIGHBORS")
+                        
+                        _msg("    - Executing `Clip` to isolate buffer LINE segment.")
+                        arcpy.analysis.Clip(mem_buffer_line, poly_geom, mem_clipped_line)
+
+                        if int(arcpy.management.GetCount(mem_clipped_line).getOutput(0)) > 0:
+                            _msg("    - Appending clipped line segment to target feature class.")
+                            with arcpy.da.SearchCursor(mem_clipped_line, ["SHAPE@"]) as line_cursor:
+                                for line_row in line_cursor:
+                                    icursor.insertRow([line_row[0], apz_dist_val, keith_match_val, eff_slope_val])
+                        else:
+                            _msg("    - Clip resulted in empty line feature; no segment to append.")
+                        
+                        _msg(f"    - Deallocating transient line resources for iteration {i+1}.")
+                        for item in [mem_buffer_poly, mem_buffer_line, mem_clipped_line]:
+                            if arcpy.Exists(item): arcpy.management.Delete(item)
+
+                _msg("-> Iterative processing complete.")
+                _msg("-> Polyline generation sub-protocol finished.")
+
+                # Finalize Unified Polygon
+                _msg("-> Executing geometry aggregation for unified APZ polygon.")
+                if not apz_buffer_polygons_to_merge:
+                    _warn("   - No clipped buffer polygons were generated; cannot create unified APZ layer.")
+                else:
+                    apz_poly_name = f"AEP{project_number}_APZ"
+                    apz_poly_fc = os.path.join(fds_path, apz_poly_name)
+                    _prepare_output(apz_poly_fc, overwrite_outputs, "FeatureClass", workspace, geometry_type="POLYGON", spatial_ref=sr)
+                    
+                    mem_merged = "in_memory\\merged_apz"
+                    _msg("   - Executing `Merge` on transient clipped polygon collection.")
+                    arcpy.management.Merge(apz_buffer_polygons_to_merge, mem_merged)
+                    
+                    _msg("   - Executing `Dissolve` to generate final unified APZ geometry.")
+                    arcpy.management.Dissolve(mem_merged, apz_poly_fc)
+
+                    _msg(f"   - Unified APZ polygon created: {apz_poly_fc}")
+                    _msg("   - Deallocating transient polygon resources.")
+                    arcpy.management.Delete(mem_merged)
+                    for item in apz_buffer_polygons_to_merge:
+                        if arcpy.Exists(item): arcpy.management.Delete(item)
+                
+                _msg("--- APZ Visualization Protocol Complete ---")
+
+        except Exception as ex_viz:
+            _warn(f"APZ Visualization Protocol failed: {ex_viz}")
+            apz_lines_fc = None
+            apz_poly_fc = None
+
 
         try:
             arcpy.management.Delete("in_memory")
@@ -551,8 +770,10 @@ class BushfireToolboxV10(object):
 
         if add_to_map:
             outputs_to_add = [
-                svtm_bbuf_erase_path,
-                svtm_path,
+                apz_assessment_fc,
+                apz_lines_fc,
+                apz_poly_fc,
+                svtm_site_slope_fc,
                 bbuf_path,
                 buffer_path,
                 clipped_path,
@@ -564,22 +785,22 @@ class BushfireToolboxV10(object):
                 outputs_to_add.append(final_path)
             self._add_outputs_to_map(outputs_to_add)
         else:
-            _msg("Not adding outputs to the map by request.")
+            _msg("Outputs not added to map (per parameter).")
 
-        _msg("Bushfire Preliminary Assessment V10 completed.")
+        _msg("Process complete.")
         return
 
     def _infer_z_field(self, fc):
-        _msg(f"Attempting to divine elevation field in {fc}...")
+        _msg(f"Detecting elevation field in: {fc}")
         fields = [f for f in arcpy.ListFields(fc) if f.type in ("Integer", "SmallInteger", "Double", "Single")]
         candidates = ("ELEVATION", "ELEV", "Z", "CONTOUR", "VALUE")
         for cand in candidates:
             for f in fields:
                 if f.name.upper() == cand:
-                    _msg(f"Using field '{f.name}'.")
+                    _msg(f"Using elevation field: {f.name}")
                     return f.name
         if fields:
-            _warn(f"No standard elevation field; defaulting to '{fields[0].name}'.")
+            _warn(f"No standard elevation field; defaulting to first numeric: {fields[0].name}")
             return fields[0].name
         raise arcpy.ExecuteError("No numeric elevation field found for contours.")
 
@@ -588,38 +809,38 @@ class BushfireToolboxV10(object):
             aprx = arcpy.mp.ArcGISProject("CURRENT")
             m = aprx.activeMap
             if not m:
-                _warn("No active map detected.")
+                _warn("No active map found.")
                 return
             for lyr_path in paths:
                 try:
                     if not lyr_path or not arcpy.Exists(lyr_path):
                         continue
                     m.addDataFromPath(lyr_path)
-                    _msg(f"Layer added to map: {lyr_path}")
+                    _msg(f"Added to map: {lyr_path}")
                 except Exception as ex_inner:
-                    _warn(f"Could not add {lyr_path} to map: {ex_inner}")
+                    _warn(f"Add to map failed for '{lyr_path}': {ex_inner}")
             _msg("Map additions complete.")
         except Exception as ex:
-            _warn(f"Could not add outputs to map: {ex}")
+            _warn(f"Map addition failed: {ex}")
 
     def _run_slope_analysis(self, in_tin, in_polygons, add_to_map, label=""):
         arcpy.env.overwriteOutput = True
         if not (in_tin and arcpy.Exists(in_tin)):
-            raise arcpy.ExecuteError("Slope Analysis: Input TIN does not exist.")
+            raise arcpy.ExecuteError("Slope Analysis: TIN does not exist.")
         if not (in_polygons and arcpy.Exists(in_polygons)):
-            raise arcpy.ExecuteError("Slope Analysis: Input polygons do not exist.")
+            raise arcpy.ExecuteError("Slope Analysis: polygons do not exist.")
 
-        _msg(f"Slope Analysis starting for '{label}'")
+        _msg(f"Slope analysis: {label}")
 
         try:
             desc = arcpy.Describe(in_tin)
             ds_type = getattr(desc, "datasetType", None) or getattr(desc, "dataType", None) or ""
             if ds_type is None or "tin" not in str(ds_type).lower():
-                raise arcpy.ExecuteError(f"Slope Analysis: Input is not a TIN (datasetType/dataType='{ds_type}').")
+                raise arcpy.ExecuteError(f"Slope Analysis: input is not a TIN (type='{ds_type}').")
         except arcpy.ExecuteError:
             raise
         except Exception as e:
-            raise arcpy.ExecuteError(f"Slope Analysis: Failed to validate TIN: {e}")
+            raise arcpy.ExecuteError(f"Slope Analysis: TIN validation failed: {e}")
 
         cell_size = 1
         target_sr = arcpy.SpatialReference(8058)
@@ -630,9 +851,9 @@ class BushfireToolboxV10(object):
         except Exception:
             default_gdb = arcpy.env.workspace
             if not default_gdb:
-                raise arcpy.ExecuteError("Slope Analysis: Unable to determine default geodatabase.")
+                raise arcpy.ExecuteError("Slope Analysis: default geodatabase not found.")
 
-        _msg(f"Slope Analysis: default GDB = {default_gdb}")
+        _msg(f"Output GDB: {default_gdb}")
 
         fd_name = "Slope"
         fd_path = os.path.join(default_gdb, fd_name)
@@ -649,7 +870,7 @@ class BushfireToolboxV10(object):
         guid = uuid.uuid4().hex[:8]
         mem = "in_memory"
 
-        _msg("TIN -> 1m raster...")
+        _msg("TIN to 1m raster...")
         tin_rast = os.path.join(mem, f"tin_rast_{guid}")
         try:
             arcpy.ddd.TinRaster(in_tin, tin_rast, "FLOAT", "#", "CELLSIZE", str(cell_size))
@@ -657,15 +878,14 @@ class BushfireToolboxV10(object):
             tin_rast = os.path.join(default_gdb, f"tin_rast_{guid}")
             arcpy.ddd.TinRaster(in_tin, tin_rast, "FLOAT", "#", "CELLSIZE", str(cell_size))
 
-        _msg("Slope (degrees)...")
+        _msg("Computing slope (deg) and aspect (deg)...")
         slope_rast = arcpy.sa.Slope(tin_rast, "DEGREE", z_factor=1)
-        _msg("Aspect (degrees)...")
         aspect_rast = arcpy.sa.Aspect(tin_rast)
 
         _msg("Preparing polygon output and ZoneID...")
         if arcpy.Exists(out_fc):
-            _msg(f"Overwriting {out_fc}")
             arcpy.Delete_management(out_fc)
+            _msg(f"Overwriting existing: {out_fc}")
         arcpy.management.CopyFeatures(in_polygons, out_fc)
         zone_field = "ZoneID"
         if zone_field not in [f.name for f in arcpy.ListFields(out_fc)]:
@@ -673,7 +893,7 @@ class BushfireToolboxV10(object):
         oid_field = arcpy.Describe(out_fc).OIDFieldName
         arcpy.management.CalculateField(out_fc, zone_field, f"!{oid_field}!", "PYTHON3")
 
-        _msg("RasterToPoint sample generation...")
+        _msg("Sampling rasters to points...")
         elev_pts = os.path.join(mem, f"elev_pts_{guid}")
         slope_pts = os.path.join(mem, f"slope_pts_{guid}")
         aspect_pts = os.path.join(mem, f"aspect_pts_{guid}")
@@ -720,14 +940,14 @@ class BushfireToolboxV10(object):
         if not zone_field_elev or not zone_field_slope or not zone_field_aspect:
             raise arcpy.ExecuteError("ZoneID field not found after spatial join.")
 
-        _msg("Computing statistics...")
+        _msg("Computing elevation and slope statistics...")
         elev_stats_tbl = os.path.join(mem, f"elev_stats_{guid}")
         slope_stats_tbl = os.path.join(mem, f"slope_stats_{guid}")
         stat_fields = [["VALUE", "MIN"], ["VALUE", "MAX"], ["VALUE", "MEAN"], ["VALUE", "STD"], ["VALUE", "MEDIAN"], ["VALUE", "COUNT"]]
         arcpy.analysis.Statistics(elev_pts_z, elev_stats_tbl, stat_fields, case_field=zone_field_elev)
         arcpy.analysis.Statistics(slope_pts_z, slope_stats_tbl, stat_fields, case_field=zone_field_slope)
 
-        _msg("Circular statistics for aspect...")
+        _msg("Computing circular statistics for aspect...")
         aspect_stats_tbl = os.path.join(mem, f"aspect_stats_{guid}")
         arcpy.management.CreateTable(mem, f"aspect_stats_{guid}")
         arcpy.AddField_management(aspect_stats_tbl, "ZoneID", "LONG")
@@ -778,7 +998,7 @@ class BushfireToolboxV10(object):
                 circ_std_deg = math.degrees(circ_std)
                 icur.insertRow((z, mean_deg, circ_std_deg, n))
 
-        _msg("Slope class percentages (Tabulate Area)...")
+        _msg("Tabulating slope class areas...")
         class_definitions = {1: "0_5", 2: "5_15", 3: "15_30", 4: "30_45", 5: "45_plus"}
         remap = arcpy.sa.RemapRange([[0, 5, 1], [5, 15, 2], [15, 30, 3], [30, 45, 4], [45, 360, 5]])
         slope_class_rast = arcpy.sa.Reclassify(slope_rast, "VALUE", remap, "NODATA")
@@ -787,7 +1007,7 @@ class BushfireToolboxV10(object):
         tab_area_tbl = os.path.join(mem, f"tab_area_{guid}")
         arcpy.sa.TabulateArea(out_fc, "ZoneID", class_rast_temp, "VALUE", tab_area_tbl, cell_size)
 
-        _msg("Joining statistics into polygons...")
+        _msg("Joining statistics and creating percentage fields...")
         elev_case_field = [f.name for f in arcpy.ListFields(elev_stats_tbl)][0]
         arcpy.management.JoinField(out_fc, "ZoneID", elev_stats_tbl, elev_case_field,
                                   ["MIN_VALUE", "MAX_VALUE", "MEAN_VALUE", "STD_VALUE", "MEDIAN_VALUE", "COUNT_VALUE"])
@@ -811,73 +1031,8 @@ class BushfireToolboxV10(object):
         arcpy.management.JoinField(out_fc, "ZoneID", aspect_stats_tbl, "ZoneID",
                                   ["ASPECT_MEAN_DEG", "ASPECT_STD_DEG", "ASPECT_SAMPLE_COUNT"])
 
-        tab_case_field = [f.name for f in arcpy.ListFields(tab_area_tbl)][0]
-        arcpy.management.JoinField(out_fc, "ZoneID", tab_area_tbl, tab_case_field, None)
-
-        # Identify class fields added by TabulateArea and create clearer area/percent fields
-        tab_fields_tbl = [f for f in arcpy.ListFields(tab_area_tbl) if f.name != tab_case_field and f.type in ("Double", "Single", "Integer", "SmallInteger", "OID")]
-        class_field_mappings = []
-        for f in tab_fields_tbl:
-            fname = f.name
-            m = re.search(r'(\d+)', fname)
-            code = int(m.group(1)) if m else None
-            label = class_definitions.get(code, str(code))
-            area_field_name = f"SLOPE_CLASS_AREA_{label}_SQM"
-            pct_field_name = f"SLOPE_PCT_{label}"
-            if len(area_field_name) > 64:
-                area_field_name = area_field_name[:64]
-            if len(pct_field_name) > 64:
-                pct_field_name = pct_field_name[:64]
-            class_field_mappings.append((fname, area_field_name, pct_field_name))
-
-        area_field = "POLY_AREA_SQM"
-        try:
-            self._calculate_polygon_area(out_fc, area_field, arcpy)
-        except Exception as e:
-            tb = traceback.format_exc()
-            raise arcpy.ExecuteError(f"Failed to calculate polygon areas: {e}\n{tb}")
-
-        # Hardened calculations: handle NULLs and zero-area safely
-        for orig_field, area_field_name, pct_field_name in class_field_mappings:
-            # Add area field if missing
-            if area_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
-                arcpy.AddField_management(out_fc, area_field_name, "DOUBLE")
-            # Copy values from TabulateArea table field, converting NULLs to 0
-            arcpy.management.CalculateField(
-                out_fc,
-                area_field_name,
-                expression=f"!{orig_field}! if !{orig_field}! is not None else 0",
-                expression_type="PYTHON3"
-            )
-            # Add percent field and calculate percent with robust guarding
-            if pct_field_name not in [f.name for f in arcpy.ListFields(out_fc)]:
-                arcpy.AddField_management(out_fc, pct_field_name, "DOUBLE")
-            arcpy.management.CalculateField(
-                out_fc,
-                pct_field_name,
-                expression=(
-                    f"("
-                    f"( !{area_field_name}! if !{area_field_name}! is not None else 0 ) / "
-                    f"( !{area_field}! if !{area_field}! is not None and !{area_field}! > 0 else 1 )"
-                    f") * 100"
-                ),
-                expression_type="PYTHON3"
-            )
-
-        _msg(f"Slope analysis output created: {out_fc}")
-
-        if add_to_map:
-            try:
-                aprx = arcpy.mp.ArcGISProject("CURRENT")
-                m = aprx.activeMap or (aprx.listMaps()[0] if aprx.listMaps() else None)
-                if m:
-                    m.addDataFromPath(out_fc)
-                    _msg("Slope analysis output added to map.")
-                else:
-                    _warn("No open map to add slope output.")
-            except Exception as e:
-                _warn(f"Failed to add slope output to map: {e}")
-
+        _msg(f"Slope analysis output: {out_fc}")
+        
         try:
             for t in (elev_pts, slope_pts, aspect_pts, elev_pts_z, slope_pts_z, aspect_pts_z,
                       elev_stats_tbl, slope_stats_tbl, aspect_stats_tbl, class_rast_temp, tab_area_tbl, tin_rast):
@@ -886,37 +1041,38 @@ class BushfireToolboxV10(object):
         except Exception:
             pass
 
-        _msg(f"Slope Analysis finished for '{label}'.")
+        _msg(f"Slope analysis complete: {label}")
+        return out_fc
 
     def _calculate_polygon_area(self, fc, area_field, messages):
         if area_field not in [f.name for f in arcpy.ListFields(fc)]:
             arcpy.AddField_management(fc, area_field, "DOUBLE")
         tried = []
         try:
-            _msg("Calculating AREA_GEODESIC (Square Meters)...")
+            _msg("Calculating geodesic area (m²)...")
             arcpy.management.CalculateGeometryAttributes(fc, [[area_field, "AREA_GEODESIC"]], area_unit="Square Meters")
-            _msg(f"Geodesic area calculated into '{area_field}'.")
+            _msg(f"Geodesic area populated: {area_field}")
             return
         except Exception as e:
             tried.append(("AREA_GEODESIC", "Square Meters", str(e)))
         try:
-            _msg("Falling back to planar AREA (Square Meters)...")
+            _msg("Calculating planar area (m²)...")
             arcpy.management.CalculateGeometryAttributes(fc, [[area_field, "AREA"]], area_unit="Square Meters")
-            _msg(f"Planar area calculated into '{area_field}'.")
+            _msg(f"Planar area populated: {area_field}")
             return
         except Exception as e:
             tried.append(("AREA", "Square Meters", str(e)))
         alt_units = ["Square Meters", "SquareMeters", "SQUARE_METERS", "SQUAREMETERS", "Square Meters"]
         for alt in alt_units:
             try:
-                _msg(f"Attempting AREA with unit '{alt}'...")
+                _msg(f"Attempting planar area with unit '{alt}'...")
                 arcpy.management.CalculateGeometryAttributes(fc, [[area_field, "AREA"]], area_unit=alt)
-                _msg(f"Area calculated into '{area_field}' using unit '{alt}'.")
+                _msg(f"Area populated using unit '{alt}': {area_field}")
                 return
             except Exception as e:
                 tried.append(("AREA", alt, str(e)))
                 continue
-        msg_lines = ["Failed to calculate polygon areas; attempted:"]
+        msg_lines = ["Polygon area calculation failed; attempts:"]
         for m, u, err in tried:
             msg_lines.append(f" - method: {m}, area_unit: {u}, error: {err}")
         raise arcpy.ExecuteError("\n".join(msg_lines))
