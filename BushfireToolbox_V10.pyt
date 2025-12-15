@@ -213,7 +213,7 @@ class BushfireToolboxV10(object):
     def __init__(self):
         self.label = "Bushfire Preliminary Assessment (V10)"
         self.description = (
-            "Generates buffers, clips contours/SVTM/BFPL, builds a TIN and DSM, classifies elevation (above/below threshold), overlays onto SVTM, and runs slope analysis. Calculates APZ and effectives[...]"
+            "Generates buffers, clips contours/SVTM/BFPL, builds a TIN and DSM, classifies elevation (above/below threshold), overlays onto SVTM, runs slope analysis, calculates APZ distances and visualises APZ buffer geometry."
         )
         self.canRunInBackground = True
 
@@ -246,6 +246,7 @@ class BushfireToolboxV10(object):
         )
         p_buffer.value = 200.0
 
+        # Use GPFeatureLayer so selecting a layer from the map works (avoids Error 000840)
         p_contour = arcpy.Parameter(
             displayName="2m Contour Feature Class (or layer)",
             name="contours_fc",
@@ -306,6 +307,7 @@ class BushfireToolboxV10(object):
         return params
 
     def updateParameters(self, parameters):
+        # Populate project numbers if not altered
         if parameters[1].altered is False:
             try:
                 _msg("UI BEHAVIOR: Populating 'Project Number' dropdown from live feature service.")
@@ -326,8 +328,8 @@ class BushfireToolboxV10(object):
         workspace = parameters[0].valueAsText
         project_number = parameters[1].valueAsText
         buffer_distance = float(parameters[2].value)
-        contours_fc = parameters[3].valueAsText
-        building_fc = parameters[4].valueAsText
+        contours_fc_in = parameters[3].valueAsText
+        building_fc_in = parameters[4].valueAsText
         building_buffer_distance = float(parameters[5].value)
         split_elev = float(parameters[6].value)
         overwrite_outputs = bool(parameters[7].value)
@@ -337,22 +339,102 @@ class BushfireToolboxV10(object):
         _msg(f"-> Output Workspace: {workspace}")
         _msg(f"-> Project Number: {project_number}")
         _msg(f"-> Site Buffer Distance: {buffer_distance} meters")
-        _msg(f"-> Input 2m Contours: {contours_fc}")
-        _msg(f"-> Input Building Outlines: {building_fc}")
+        _msg(f"-> Input 2m Contours (raw): {contours_fc_in}")
+        _msg(f"-> Input Building Outlines (raw): {building_fc_in}")
         _msg(f"-> Building Buffer Distance: {building_buffer_distance} meters")
         _msg(f"-> Elevation Threshold for Classification: {split_elev} meters")
         _msg(f"-> Overwrite Existing Outputs: {overwrite_outputs}")
         _msg(f"-> Add Outputs to Map: {add_to_map}")
 
-        # Validate building geometry
+        # Robust runtime resolver: accept either a map layer selection (GPFeatureLayer)
+        # or a direct feature class path (from Catalog). This function returns a usable
+        # dataset path (feature class path) where possible; otherwise returns original value.
+        def _resolve_layer_or_path(input_text, label):
+            _msg(f"STEP (resolve): Attempting to resolve '{label}' input: '{input_text}'")
+            if not input_text:
+                _warn(f"-> Provided {label} input is empty.")
+                return input_text
+
+            # If the input appears to be a valid dataset path, prefer that
+            try:
+                if arcpy.Exists(input_text):
+                    _msg("-> Input exists as provided on disk or as a registered dataset.")
+                    return input_text
+            except Exception as ex_exists:
+                # arcpy.Exists can raise for some layer tokens; ignore and try other methods
+                _warn(f"-> arcpy.Exists raised exception for '{input_text}': {ex_exists}")
+
+            # Otherwise try to resolve as a layer in the current ArcGIS Project (map)
+            try:
+                aprx = arcpy.mp.ArcGISProject("CURRENT")
+                for m in aprx.listMaps():
+                    for lyr in m.listLayers():
+                        try:
+                            # Compare by layer name or longName (user-provided text)
+                            if lyr.name == input_text or getattr(lyr, "longName", None) == input_text:
+                                # Some layers (group layers) won't have dataSource; handle gracefully
+                                try:
+                                    data_src = lyr.dataSource
+                                except Exception:
+                                    data_src = None
+                                if data_src and arcpy.Exists(data_src):
+                                    _msg(f"   - Resolved to map layer '{lyr.name}' with data source: {data_src}")
+                                    return data_src
+                                else:
+                                    _msg(f"   - Found layer '{lyr.name}' but could not obtain a usable data source; returning layer's name for downstream handling.")
+                                    return lyr.name
+                        except Exception as ex_lyr:
+                            _warn(f"   - Error while checking layer '{getattr(lyr,'name',str(lyr))}': {ex_lyr}")
+            except Exception as ex_aprx:
+                _warn(f"-> Could not access ArcGISProject to resolve layer (this may be normal in non-interactive contexts): {ex_aprx}")
+
+            _warn(f"-> Could not resolve '{label}' ('{input_text}') to an existing dataset or map layer. Proceeding with original value; subsequent operations may fail.")
+            return input_text
+
+        # Resolve both inputs to usable forms
+        contours_fc = _resolve_layer_or_path(contours_fc_in, "Contours")
+        building_fc = _resolve_layer_or_path(building_fc_in, "Building Outline")
+
+        # If building_fc is a layer name (not a dataset path) attempt a Describe; if Describe fails,
+        # attempt to find the layer in the project and get its dataSource.
         _msg("STEP: Validate geometry type of Building Outlines layer.")
         try:
-            bdesc = arcpy.Describe(building_fc)
+            try:
+                bdesc = arcpy.Describe(building_fc)
+            except Exception as ex_desc:
+                _warn(f"-> Describe failed for provided building input '{building_fc}': {ex_desc}. Attempting to resolve via ArcGIS Project layers.")
+                # Try mapping via Aprx layers again if Describe failed
+                try:
+                    aprx = arcpy.mp.ArcGISProject("CURRENT")
+                    resolved = None
+                    for m in aprx.listMaps():
+                        for lyr in m.listLayers():
+                            if lyr.name == building_fc or getattr(lyr, "longName", None) == building_fc:
+                                try:
+                                    ds = lyr.dataSource
+                                except Exception:
+                                    ds = None
+                                if ds and arcpy.Exists(ds):
+                                    resolved = ds
+                                    break
+                        if resolved:
+                            break
+                    if resolved:
+                        _msg(f"-> Resolved building input to dataset: {resolved}")
+                        building_fc = resolved
+                        bdesc = arcpy.Describe(building_fc)
+                    else:
+                        raise arcpy.ExecuteError(f"Could not resolve building layer name '{building_fc}' to a dataset.")
+                except Exception as ex_res:
+                    raise arcpy.ExecuteError(f"CRITICAL: Could not describe or resolve Building Outline input. Details: {ex_res}")
+
             shape_type = getattr(bdesc, "shapeType", "").lower()
             _msg(f"-> Detected shape type: '{shape_type}'")
             if shape_type != "polygon":
-                raise arcpy.ExecuteError(f"Input 'Building Outline' Feature Class must be of type Polygon, but found '{bdesc.shapeType}'.")
+                raise arcpy.ExecuteError(f"Input 'Building Outline' Feature Class must be of type Polygon, but found '{getattr(bdesc,'shapeType',None)}'.")
             _msg("-> Validation PASSED: Building Outlines are polygons.")
+        except arcpy.ExecuteError:
+            raise
         except Exception as ex:
             raise arcpy.ExecuteError(f"CRITICAL ERROR: Validation failed for Building Outlines layer. Details: {ex}")
 
@@ -444,9 +526,29 @@ class BushfireToolboxV10(object):
         _msg("STEP: Generate TIN (Triangulated Irregular Network) from clipped contours.")
         tin_name = f"AEP{project_number}_TIN"
         tin_path = _tin_output_path(workspace, tin_name)
+        # NEW: delete existing TIN only when overwrite_outputs is True; otherwise create a unique name
         if arcpy.Exists(tin_path):
-            _msg(f"-> Found existing TIN at '{tin_path}'. Deleting to ensure fresh creation.")
-            arcpy.management.Delete(tin_path)
+            if overwrite_outputs:
+                _msg(f"-> Found existing TIN at '{tin_path}' and overwrite enabled. Deleting to ensure fresh creation.")
+                try:
+                    arcpy.management.Delete(tin_path)
+                except Exception as ex_del_tin:
+                    raise arcpy.ExecuteError(f"Failed to delete existing TIN '{tin_path}': {ex_del_tin}")
+            else:
+                # generate unique tin name
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                unique_tin_name = f"{tin_name}_{stamp}"
+                unique_tin_path = _tin_output_path(workspace, unique_tin_name)
+                # ensure uniqueness in rare case of collision
+                i = 1
+                while arcpy.Exists(unique_tin_path):
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    unique_tin_name = f"{tin_name}_{stamp}_{i}"
+                    unique_tin_path = _tin_output_path(workspace, unique_tin_name)
+                    i += 1
+                _msg(f"-> Found existing TIN at '{tin_path}' and overwrite is disabled. Will create new TIN as '{unique_tin_path}'")
+                tin_path = unique_tin_path
+
         z_field = self._infer_z_field(clipped_path)
         _msg(f"-> Using field '{z_field}' from '{clipped_path}' as the height source for the TIN.")
         in_feats = [[clipped_path, z_field, "hardline"]]
@@ -673,7 +775,7 @@ class BushfireToolboxV10(object):
 
                 apz_table = {
                     "Rainforest": {"Up slopes and flat": 38, ">0-5°": 47, ">5-10°": 57, ">10-15°": 69, ">15-20°": 81},
-                    "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland": {"Up slopes and flat": 67, ">0-5°": 79, ">5-10°": 93, ">10-15°": 100},
+                    "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland": {"Up slopes and flat": 67, ">0-5°": 79, ">5-10°": 93, ">10-15°": 100, ">15-20°": 112},
                     "Grassy and Semi-Arid Woodland (including Mallee)": {"Up slopes and flat": 42, ">0-5°": 50, ">5-10°": 60, ">10-15°": 72, ">15-20°": 85},
                     "Forested Wetland (excluding Coastal Swamp Forest)": {"Up slopes and flat": 34, ">0-5°": 42, ">5-10°": 51, ">10-15°": 62, ">15-20°": 73},
                     "Tall Heath": {"Up slopes and flat": 50, ">0-5°": 56, ">5-10°": 61, ">10-15°": 67, ">15-20°": 72},
@@ -689,27 +791,37 @@ class BushfireToolboxV10(object):
                     v = norm(vegclass_text)
                     if v == "NOT CLASSIFIED": return "Not classified"
                     if "RAINFOREST" in v: return "Rainforest"
-                    if ("FOREST" in v and "WET" in v) or ("FOREST" in v and "DRY" in v) or ("SCLEROPHYLL" in v) or ("PINE" in v) or ("SUB-ALPINE" in v) or ("COASTAL SWAMP FOREST" in v): return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
-                    if ("WOODLAND" in v and ("GRASSY" in v or "SEMI-ARID" in v)) or ("MALLEE" in v): return "Grassy and Semi-Arid Woodland (including Mallee)"
+                    # Match a variety of forest descriptors to the long Forest key
+                    if (("FOREST" in v and ("WET" in v or "DRY" in v)) or
+                        "SCLEROPHYLL" in v or
+                        "PINE" in v or
+                        "SUB-ALPINE" in v or
+                        "COASTAL SWAMP FOREST" in v):
+                        return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
+                    if ("WOODLAND" in v and ("GRASSY" in v or "SEMI-ARID" in v)) or ("MALLEE" in v):
+                        return "Grassy and Semi-Arid Woodland (including Mallee)"
                     if ("WETLAND" in v and "FOREST" in v) or ("FORESTED WETLAND" in v):
-                        if "COASTAL SWAMP FOREST" in v: return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
+                        if "COASTAL SWAMP FOREST" in v:
+                            return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
                         return "Forested Wetland (excluding Coastal Swamp Forest)"
                     if "TALL HEATH" in v: return "Tall Heath"
                     if "SHORT HEATH" in v or ("HEATH" in v and "SHORT" in v): return "Short Heath"
                     if "ARID" in v or "CHENOPOD" in v or ("ACACIA" in v and "SHRUB" in v): return "Arid-Shrublands (acacia and chenopod)"
                     if ("WETLAND" in v and "FRESHWATER" in v) or ("FRESHWATER" in v): return "Freshwater Wetlands"
                     if "GRASSLAND" in v: return "Grassland"
-                    if "FOREST" in v: return "Forest (wet and dry sclerophyll) including Coastal Swamp Forest, Pine Plantations and Sub-Alpine Woodland"
                     if "WOODLAND" in v: return "Grassy and Semi-Arid Woodland (including Mallee)"
                     if "WETLAND" in v: return "Forested Wetland (excluding Coastal Swamp Forest)"
                     if "HEATH" in v: return "Short Heath"
+                    # Fallback to Not classified
                     return "Not classified"
 
                 def effective_slope_value(slope_type, max_deg):
                     st = (slope_type or "").strip()
                     if st == "Up Slope": return "Up slopes and flat"
-                    try: d = float(max_deg) if max_deg is not None else None
-                    except: d = None
+                    try:
+                        d = float(max_deg) if max_deg is not None else None
+                    except:
+                        d = None
                     if d is None or d < 1: return "Up slopes and flat"
                     if d < 5: return ">0-5°"
                     if d < 10: return ">5-10°"
@@ -732,7 +844,8 @@ class BushfireToolboxV10(object):
                             apz_dist = 36 # Minimum grassland distance rule
                         else:
                             apz_row_data = apz_table.get(keith)
-                            if apz_row_data: apz_dist = apz_row_data.get(eff_slope)
+                            if apz_row_data:
+                                apz_dist = apz_row_data.get(eff_slope)
                         row[5] = int(apz_dist) if apz_dist is not None else None
                         
                         ucur.updateRow(row)
